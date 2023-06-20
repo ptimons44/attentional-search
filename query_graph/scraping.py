@@ -3,30 +3,42 @@ import requests
 from bs4 import BeautifulSoup
 import json
 
-def search_google(keywords, before=None, extra_params=None):
+def search_google(keywords, num_results=10, timeperiod=None):
     """
     before is string in YYYY-MM-DD format
     """
-    if before is not None:
-        keywords += f" before:{before}"
-    params = {
-        "key": config.GGLSEARCH_APIKEY(),
-        "cx": config.GGL_SE(),
-        "q": keywords,
-        "h1": "en",
-        "lr": "lang_en"
-    }
-    if extra_params is not None:
-        params |= extra_params
+    output = []
+    while num_results > 0:
+        if num_results < 10:
+            page=1
+            num=num_results
+        else:
+            num=10
+            page=1
+        params = {
+            "key": config.GGLSEARCH_APIKEY(),
+            "cx": config.GGL_SE(),
+            "q": keywords,
+            "h1": "en",
+            "lr": "lang_en",
+            "page": page,
+            "num": num
+        }
 
-    response = requests.get(config.GGLSEARCH_URL(), params=params)
-    try:
-        response = json.loads(response.content)
-        response["error"] = 0
+        response = requests.get(config.GGLSEARCH_URL(), params=params)
+        try:
+            response = json.loads(response.content)
+            response["error"] = 0
+            
+        except:
+            response = json.loads("{\"error\": 1}")
         
-    except:
-        response = json.loads("{\"error\": 1}")
-    return response["items"]
+        for item in response["items"]:
+            output.append(item)
+        num_results -= num
+        page += 1
+
+    return output
 
 def get_webpage_content(url):
     try:
@@ -58,7 +70,12 @@ def scrape_urls(urls):
         info[url] = content
     return info
 
+def get_top_k_content(query, k=10):
+    search = search_google(query, num_results=k)
+    return scrape_urls(list(item["link"] for item in search))
+
 if __name__ == "__main__":
-    search = search_google("climate change")
+    search = search_google("climate change", num_results=3)
+    print(len(search))
     info = scrape_urls(list(item["link"] for item in search))
-    print(search)
+    print(info)
