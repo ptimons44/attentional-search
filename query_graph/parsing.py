@@ -46,5 +46,4 @@ if __name__ == "__main__":
    nlp = spacy.load("en_core_web_sm") # set with config file / import custom model
    input_string = "The 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots."
    keywords = extract_keywords(input_string, nlp)
-   print(keywords)
-   print(augment_keywords(keywords))
+   print(augment_keywords(keywords)) # ['The 2020 election', 'Trump', 'fraudulent voting machines', 'electronic ballots', 'voter fraud', 'mail-in voting', 'swing states', 'election interference', 'campaign finance', 'polling data', 'voting irregularities', 'ballot counting', 'legal challenges', 'election results']
