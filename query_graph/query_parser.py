@@ -47,4 +47,4 @@ if __name__ == "__main__":
    input_string = "The 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots."
    keywords = extract_keywords(input_string, nlp)
    print(keywords)
-   # print(augment_keywords(keywords))
+   print(augment_keywords(keywords))

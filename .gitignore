@@ -160,4 +160,4 @@ cython_debug/
 #.idea/
 
 # config file
-/config.py
+/query_graph/config.py
