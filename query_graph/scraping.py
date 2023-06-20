@@ -67,7 +67,8 @@ def scrape_urls(urls):
     info = dict()
     for url in urls:
         content = get_webpage_content(url)
-        info[url] = content
+        if content is not None:
+            info[url] = content
     return info
 
 def get_top_k_content(query, k=10):
