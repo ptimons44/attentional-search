@@ -20,7 +20,6 @@ def extract_keywords(input, nlp):
    return list(doc.noun_chunks)
 
 def augment_keywords(keywords):
-   similar = set()
    prompt = "You are part of the pipeline in a research assistant that generates a knowledge graph given an input query question. \
       Given the following list of noun phrases to each be searched in a search enging, augment the list with phrases that will \
          enhance the search process. List of current keywords: " + str(keywords) + ". Output your resonse as a json where the key of the \
@@ -31,10 +30,10 @@ def augment_keywords(keywords):
    return response["keywords"]
 
 # WIP
-def generate_search_queries(query):
-    keywords = extract_keywords(query)
-    augment_keywords = augment_keywords(keywords)
-    return augment_keywords
+def generate_search_queries(query, nlp):
+    keywords = extract_keywords(query, nlp)
+    augmented_keywords = augment_keywords(keywords)
+    return augmented_keywords
    #  search_queries = set()
    #  # enumerate all possible combinations of keywords with AND
    #  for keywords_per_combo in range(len(keywords)):
