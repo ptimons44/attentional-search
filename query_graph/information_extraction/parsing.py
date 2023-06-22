@@ -2,6 +2,22 @@ import spacy
 
 from scipy.spatial.distance import cosine
 
+def get_sentence_index(phrase, sentences):
+   """_summary_
+
+   Args:
+       phrase (spacy.span): phrase we want the sentence index of
+       sentences (list): list of sentences (spans)
+
+   Returns:
+       int: index of phrase in sentences
+   """
+   for ix, sentence in enumerate(sentences):
+      if sentence.end >= phrase.end:
+         index = ix
+         break
+   return index
+
 def extract_keywords(query, gpt_response, nlp, threshold=0.4):
    """_summary_
 
@@ -14,10 +30,12 @@ def extract_keywords(query, gpt_response, nlp, threshold=0.4):
    """
    gpt_doc = nlp(gpt_response)
    query_doc = nlp(query)
-   query_keywords = list(nlp(query_doc).noun_chunks)
-   gpt_keywords = list(nlp(gpt_doc).noun_chunks)
+   gpt_keywords = list(gpt_doc.noun_chunks)
+   query_keywords = list(query_doc.noun_chunks)
+   gpt_sentences = list(gpt_doc.sents)
 
    keywords = set()
+   gpt_keyword_sentence_mapping = dict()
    for gpt_word in gpt_keywords:
       max_similarity = 1
       most_similar = None
@@ -28,16 +46,19 @@ def extract_keywords(query, gpt_response, nlp, threshold=0.4):
             most_similar = query_word
       
       if max_similarity <= threshold:
-         keywords.add((most_similar, gpt_word))
-   return keywords
+         keywords.add((most_similar.text, gpt_word.text))
+         # create keyword to sentence mapping
+         position = get_sentence_index(gpt_word, gpt_sentences)
+         gpt_keyword_sentence_mapping[gpt_word.text] = position
+   return keywords, gpt_keyword_sentence_mapping
 
 def generate_search_queries(query, gpt_response, nlp):
-   keywords = extract_keywords(query, gpt_response, nlp)
+   keywords, gpt_keyword_sentence_mapping = extract_keywords(query, gpt_response, nlp)
    search_queries = set()
    for (q, cgpt) in keywords:
-      search_queries.add(q.text + " AND " + cgpt.text)
-      search_queries.add(q.text + " OR " + cgpt.text)
-   return search_queries
+      search_queries.add(q + " AND " + cgpt)
+      search_queries.add(q + " OR " + cgpt)
+   return search_queries, gpt_keyword_sentence_mapping
 
 
 if __name__ == "__main__":
