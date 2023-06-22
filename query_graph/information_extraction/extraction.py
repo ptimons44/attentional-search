@@ -54,7 +54,7 @@ def similarity(sentence1, sentence2, model, tokenizer):
     return cosine(enc1, enc2)
 
 
-def get_k_most_similar_sents(content, query, k=20):
+def get_k_most_similar_sents(content, query, k=20, context_window=2):
     """finds relevant content by compa
 
     Args:
@@ -71,24 +71,33 @@ def get_k_most_similar_sents(content, query, k=20):
 
 
     nlp = spacy.load(config.language_model())
-    # query_vec = nlp(query).vector
 
     most_similar_sents = []
     for source in content:
         doc = nlp(content[source])
-        for sentence in doc.sents:
-            sim = similarity(sentence.text, query, model, tokenizer)
-            # sim = sentence.vector.dot(query_vec) / (np.linalg.norm(sentence.vector)*np.linalg.norm(query_vec))
-            most_similar_sents.append((source, sentence.text, sim))
+        
+        sentences = list(sentence.text for sentence in doc.sents)
+        for ix, sentence in enumerate(sentences):
+            pre_context = ""
+            post_context = ""
+            if ix > 0 and context_window > 0:
+                pre_context = " ".join(sentences[max(0, ix-context_window):ix]).strip()
+            if ix < len(sentences) - 1 and context_window > 0:
+                post_context = " ".join(sentences[ix+1:min(len(sentences)-1, ix+context_window+1)]).strip()
+            context = pre_context + " " + sentence + " " + post_context
+            # get similarity
+            sim = similarity(sentence, query, model, tokenizer)
+            # add to list
+            most_similar_sents.append((sim, source, sentence, context))
     
-    most_similar_sents.sort(key=lambda x: x[2])
+    most_similar_sents.sort(key=lambda x: x[0])
     return most_similar_sents[:min(k, len(most_similar_sents))]
 
 
 if __name__ == "__main__":
-    with open('/Users/patricktimons/Documents/GitHub/query-graph/query_graph/text.json', 'r') as f:
+    with open('/Users/patricktimons/Documents/GitHub/query-graph/temp.json', 'r') as f:
         content = json.load(f)
     query = "The 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots."
-    top_k = get_k_most_similar_sents(content, query)
-    for (source, sentence, simmilarity) in top_k:
-        print(simmilarity, ":", sentence)
+    top_k = get_k_most_similar_sents(content, query, 25)
+    for ix, (sim, source, sentence, context) in enumerate(top_k):
+        print(ix,":", sentence, ":\n", context, "\n\n")
