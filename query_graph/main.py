@@ -21,7 +21,8 @@ def create_query_graph(query, num_search_results, nlp, num_nodes=100, context_wi
         query (string): user's (textual) query, such as a question or research topic
     """
     gpt_respone = ask_gpt_query(query)
-    search_queries = generate_search_queries(query, gpt_respone, nlp)
+    search_queries, gpt_keyword_sentence_mapping = generate_search_queries(query, gpt_respone, nlp)
+    print("maping:\n", gpt_keyword_sentence_mapping)
     content = dict()
     for search_query in search_queries:
         scraped_content = get_top_k_content(search_query, content, k=num_search_results)
@@ -33,13 +34,16 @@ def create_query_graph(query, num_search_results, nlp, num_nodes=100, context_wi
     # with open("temp.json", "r") as f:
     #     content = json.load(f)
     nodes = get_k_most_similar_sents(content, query, k=num_nodes, context_window=context_window)
+    
+    # for ix, (similarity,source,sent,context,search_phrase) in enumerate(nodes):
+    #     pass
 
     return nodes
 
 if __name__ == "__main__":
     nlp = spacy.load(config.language_model())
     # query = "Was the 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots?"
-    query = "Is climate change a timely threat to humanity?"
+    query = "Was Issac Newton the first person to discover gravity??"
     result = create_query_graph(query, 3, nlp)
     for ix, (similarity,source,sent,context,search_phrase) in enumerate(result):
         print(ix, ".", search_phrase, ":", context)
