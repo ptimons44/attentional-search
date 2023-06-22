@@ -63,17 +63,19 @@ def get_webpage_content(url):
 
     return None
 
-def scrape_urls(urls):
+def scrape_urls(urls, aggregate_content, query):
     info = dict()
     for url in urls:
+        if url in info  or url in aggregate_content:
+            continue
         content = get_webpage_content(url)
         if content is not None:
-            info[url] = content
+            info[url] = (query, content)
     return info
 
-def get_top_k_content(query, k=10):
+def get_top_k_content(query, aggregate_content, k=10):
     search = search_google(query, num_results=k)
-    return scrape_urls(list(item["link"] for item in search))
+    return scrape_urls(list(item["link"] for item in search), aggregate_content, query)
 
 if __name__ == "__main__":
     search = search_google("climate change", num_results=3)
