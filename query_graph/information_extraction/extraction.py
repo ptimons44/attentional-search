@@ -1,5 +1,4 @@
-from gpt import callGPT
-import spacy
+from information_extraction.gpt import callGPT
 
 import config
 import json
@@ -9,6 +8,58 @@ import numpy as np
 import torch
 from transformers import BertTokenizer, BertModel
 from scipy.spatial.distance import cosine
+
+import re
+# -*- coding: utf-8 -*-
+alphabets= "([A-Za-z])"
+prefixes = "(Mr|St|Mrs|Ms|Dr)[.]"
+suffixes = "(Inc|Ltd|Jr|Sr|Co)"
+starters = "(Mr|Mrs|Ms|Dr|Prof|Capt|Cpt|Lt|He\s|She\s|It\s|They\s|Their\s|Our\s|We\s|But\s|However\s|That\s|This\s|Wherever)"
+acronyms = "([A-Z][.][A-Z][.](?:[A-Z][.])?)"
+websites = "[.](com|net|org|io|gov|edu|me)"
+digits = "([0-9])"
+multiple_dots = r'\.{2,}'
+
+def split_into_sentences(text: str) -> list[str]:
+    """
+    Split the text into sentences.
+
+    If the text contains substrings "<prd>" or "<stop>", they would lead 
+    to incorrect splitting because they are used as markers for splitting.
+
+    :param text: text to be split into sentences
+    :type text: str
+
+    :return: list of sentences
+    :rtype: list[str]
+    """
+    text = " " + text + "  "
+    text = text.replace("\n"," ")
+    text = re.sub(prefixes,"\\1<prd>",text)
+    text = re.sub(websites,"<prd>\\1",text)
+    text = re.sub(digits + "[.]" + digits,"\\1<prd>\\2",text)
+    text = re.sub(multiple_dots, lambda match: "<prd>" * len(match.group(0)) + "<stop>", text)
+    if "Ph.D" in text: text = text.replace("Ph.D.","Ph<prd>D<prd>")
+    text = re.sub("\s" + alphabets + "[.] "," \\1<prd> ",text)
+    text = re.sub(acronyms+" "+starters,"\\1<stop> \\2",text)
+    text = re.sub(alphabets + "[.]" + alphabets + "[.]" + alphabets + "[.]","\\1<prd>\\2<prd>\\3<prd>",text)
+    text = re.sub(alphabets + "[.]" + alphabets + "[.]","\\1<prd>\\2<prd>",text)
+    text = re.sub(" "+suffixes+"[.] "+starters," \\1<stop> \\2",text)
+    text = re.sub(" "+suffixes+"[.]"," \\1<prd>",text)
+    text = re.sub(" " + alphabets + "[.]"," \\1<prd>",text)
+    if "”" in text: text = text.replace(".”","”.")
+    if "\"" in text: text = text.replace(".\"","\".")
+    if "!" in text: text = text.replace("!\"","\"!")
+    if "?" in text: text = text.replace("?\"","\"?")
+    text = text.replace(".",".<stop>")
+    text = text.replace("?","?<stop>")
+    text = text.replace("!","!<stop>")
+    text = text.replace("<prd>",".")
+    sentences = text.split("<stop>")
+    sentences = [s.strip() for s in sentences]
+    if sentences and not sentences[-1]: sentences = sentences[:-1]
+    return sentences
+
 
 def sentence_embedding(sentence, model, tokenizer, context=""):
     # Add the special tokens.
@@ -53,12 +104,11 @@ def similarity(sentence1, sentence2, model, tokenizer):
     enc2 = sentence_embedding(sentence2, model, tokenizer)
     return cosine(enc1, enc2)
 
-
 def get_k_most_similar_sents(content, query, k=20, context_window=2):
     """finds relevant content by compa
 
     Args:
-        content (dict): keys are url (string), values are text scraped from the web
+        content (dict): keys are url (string), values are tuple: (search_phrase, text scraped from the web)
     """
     # Load pre-trained model (weights)
     model = BertModel.from_pretrained('bert-base-uncased',
@@ -69,14 +119,10 @@ def get_k_most_similar_sents(content, query, k=20, context_window=2):
     # Load pre-trained model tokenizer (vocabulary)
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
-
-    nlp = spacy.load(config.language_model())
-
     most_similar_sents = []
     for source in content:
-        doc = nlp(content[source])
-        
-        sentences = list(sentence.text for sentence in doc.sents)
+        (search_phrase, page) = content[source]
+        sentences = split_into_sentences(page)
         for ix, sentence in enumerate(sentences):
             pre_context = ""
             post_context = ""
@@ -88,7 +134,7 @@ def get_k_most_similar_sents(content, query, k=20, context_window=2):
             # get similarity
             sim = similarity(sentence, query, model, tokenizer)
             # add to list
-            most_similar_sents.append((sim, source, sentence, context))
+            most_similar_sents.append((sim, source, sentence, context, search_phrase))
     
     most_similar_sents.sort(key=lambda x: x[0])
     return most_similar_sents[:min(k, len(most_similar_sents))]
@@ -97,7 +143,8 @@ def get_k_most_similar_sents(content, query, k=20, context_window=2):
 if __name__ == "__main__":
     with open('/Users/patricktimons/Documents/GitHub/query-graph/temp.json', 'r') as f:
         content = json.load(f)
-    query = "The 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots."
-    top_k = get_k_most_similar_sents(content, query, 25)
+    # query = "The 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots."
+    query = "Is climate change a timely threat to humanity?"
+    top_k = get_k_most_similar_sents(content, query)
     for ix, (sim, source, sentence, context) in enumerate(top_k):
         print(ix,":", sentence, ":\n", context, "\n\n")
