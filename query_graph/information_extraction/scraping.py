@@ -80,5 +80,6 @@ def get_top_k_content(query, aggregate_content, k=10):
 if __name__ == "__main__":
     search = search_google("climate change", num_results=3)
     print(len(search))
-    info = scrape_urls(list(item["link"] for item in search))
-    print(info)
+    print(search)
+    # info = scrape_urls(list(item["link"] for item in search))
+    # print(info)
