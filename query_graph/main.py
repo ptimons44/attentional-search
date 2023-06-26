@@ -40,8 +40,6 @@ def create_query_graph(query, num_search_results, nlp, num_nodes=100, context_wi
     search_queries, gpt_keyword_sentence_mapping = generate_search_queries(query, gpt_response, nlp)
     researcher = Researcher.Researcher(query, search_queries, gpt_response, num_search_results)
     nodes = researcher.top_k_similar_sentences()
-    print("num nodes", len(nodes))
-    print(nodes[0])
     for sentence in nodes:
         sentence.get_relation_to_query(researcher.query)
     return nodes

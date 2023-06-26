@@ -151,18 +151,14 @@ class Search(Researcher):
             }
 
             response = requests.get(config.GGLSEARCH_URL(), params=params)
-            try:
-                response = json.loads(response.content)
-                response["error"] = 0
-                for item in response["items"]:
-                    output.append(item)
-                self.num_results -= num
-                page += 1
-                
-            except:
-                response = json.loads("{\"error\": 1}")
-                break
-            
+            assert (response.status_code > 199 and response.status_code < 300), "Google API Non-Responsive. Check search quotas"
+            response = json.loads(response.content)
+            response["error"] = 0
+            for item in response["items"]:
+                output.append(item)
+            self.num_results -= num
+            page += 1
+
         return list(item["link"] for item in output)
     
 
