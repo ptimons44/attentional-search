@@ -141,10 +141,10 @@ def get_k_most_similar_sents(content, query, k=20, context_window=2):
 
 
 if __name__ == "__main__":
-    with open('/Users/patricktimons/Documents/GitHub/query-graph/temp.json', 'r') as f:
-        content = json.load(f)
-    # query = "The 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots."
-    query = "Is climate change a timely threat to humanity?"
-    top_k = get_k_most_similar_sents(content, query)
-    for ix, (sim, source, sentence, context) in enumerate(top_k):
-        print(ix,":", sentence, ":\n", context, "\n\n")
+    # with open('/Users/patricktimons/Documents/GitHub/query-graph/temp.json', 'r') as f:
+    #     content = json.load(f)
+    # # query = "The 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots."
+    # query = "Is climate change a timely threat to humanity?"
+    # top_k = get_k_most_similar_sents(content, query)
+    # for ix, (sim, source, sentence, context) in enumerate(top_k):
+    #     print(ix,":", sentence, ":\n", context, "\n\n")
