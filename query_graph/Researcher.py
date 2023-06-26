@@ -10,6 +10,9 @@ from transformers import BertTokenizer, BertModel
 from transformers import pipeline
 from scipy.spatial.distance import cosine
 
+import spacy 
+
+from information_extraction.gpt import callGPT
 import config
 
 class Researcher:
@@ -23,40 +26,55 @@ class Researcher:
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
     classifier = pipeline('zero-shot-classification', model='roberta-large-mnli')
+    nlp = spacy.load("en_core_web_sm")
 
-    def __init__(self, query, queries, gpt_response, num_results=10, context_window=2):
+    def __init__(self, query, num_results=10, context_window=2):
         self.query = query
-        self.queries = queries
-
-        self.gpt_response = gpt_response
-        self.gpt_sentences = Page.split_into_sentences(self, gpt_response)
-
-        self.num_results=num_results
-        self.context_window = context_window
-        
-        self.urls = set()
-        self.fetch_urls()
-        
         self.query_vector = self.embedding(self.query)
 
-        self.pages = []
+        self.gpt_response = self.ask_gpt_query(query)
+        self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response) 
+        self.parser = Parser(query, self.gpt_response, self.nlp, threshold=0.4)
+        self.gpt_keywords = self.parser.keywords
+        self.gpt_keyword_sentence_mapping = self.parser.gpt_keyword_sentence_mapping
+
+        self.queries = self.parser.search_queries
+
+        self.num_results = num_results
+        self.context_window = context_window
+        
+        self.urls = dict()
+        self.fetch_urls()
+
+        self.pages = {}
         self.create_pages()
+
+    def ask_gpt_query(self, query):
+        with open("query_graph/information_extraction/gpt_prompts.json", "r") as f:
+            prompt = json.loads(f.read())["initial prompt"]
+        prompt += query
+        response = callGPT(prompt)
+        return response
 
         
     def fetch_urls(self):
         for search_query in self.queries:
             search = Search(search_query, self.num_results)
             for url in search.search_google():
-                self.urls.add((search_query, url))
+                if url not in self.urls:
+                    self.urls[url] = {search_query}
+                else:
+                    self.urls[url].add(search_query)
 
     def create_pages(self):
-        def create_page(search_query, url, pages):
-            page = Page(search_query,url)
-            pages.append(page)
+        def create_page(search_queries, url, pages):
+            page = Page(search_queries,url)
+            pages[url] = page
 
         threads = []
-        for (search_query, url) in self.urls:
-            threads.append(threading.Thread(target=create_page, args=(search_query,url,self.pages)))
+        for url in self.urls:
+            search_queries = self.urls[url]
+            threads.append(threading.Thread(target=create_page, args=(search_queries,url,self.pages)))
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -66,9 +84,9 @@ class Researcher:
         similarities = [[] for _ in range(resolution)]
         num_sentences = 0
         for page in self.pages:
-            if page.content:
-                for (position, sentence) in enumerate(page.sentences):
-                    sent = Sentence(page.sentences, position, self.context_window)
+            if self.pages[page].content:
+                for (position, sentence) in enumerate(self.pages[page].sentences):
+                    sent = Sentence(sentence, self.pages[page].get_sentence_content(position, self.context_window))
                     similarity = sent.similarity_to_query(self.query_vector)
                     similarities[int(similarity*resolution)].append(sent)
                     num_sentences += 1
@@ -122,6 +140,72 @@ class Researcher:
         sentence_embedding = torch.mean(token_vecs, dim=0)
         return sentence_embedding
 
+class Parser(Researcher):
+    def __init__(self, query, gpt_response, nlp, threshold=0.4):
+        self.query = query
+        self.gpt_response = gpt_response
+        self.nlp = nlp
+        self.threshold = threshold
+        self.keywords, self.gpt_keyword_sentence_mapping = self.extract_keywords()
+        self.search_queries = self.generate_search_queries()
+
+    def get_sentence_index(self, phrase, sentences):
+        """_summary_
+
+        Args:
+            phrase (spacy.span): phrase we want the sentence index of
+            sentences (list): list of sentences (spans)
+
+        Returns:
+            int: index of phrase in sentences
+        """
+        for ix, sentence in enumerate(sentences):
+            if sentence.end >= phrase.end:
+                index = ix
+                break
+        return index
+
+    def extract_keywords(self):
+        """_summary_
+
+        Args:
+            input (string): query from which we want to extract keywords
+            nlp (space.Language): a model (either off-the-shelf or custom) that creates Doc object
+
+        Returns:
+            list: list of strings, where each string is a noun phrase
+        """
+        gpt_doc = self.nlp(self.gpt_response)
+        query_doc = self.nlp(self.query)
+        gpt_keywords = list(gpt_doc.noun_chunks)
+        query_keywords = list(query_doc.noun_chunks)
+        gpt_sentences = list(gpt_doc.sents)
+
+        keywords = set()
+        gpt_keyword_sentence_mapping = dict()
+        for gpt_word in gpt_keywords:
+            max_similarity = 1
+            most_similar = None
+            for query_word in query_keywords:
+                similarity = cosine(gpt_word.vector, query_word.vector)
+                if similarity < max_similarity:
+                    max_similarity = similarity
+                    most_similar = query_word
+            
+            if max_similarity <= self.threshold:
+                keywords.add((most_similar.text, gpt_word.text))
+                # create keyword to sentence mapping
+                position = self.get_sentence_index(gpt_word, gpt_sentences)
+                gpt_keyword_sentence_mapping[gpt_word.text] = position
+        return keywords, gpt_keyword_sentence_mapping
+
+    def generate_search_queries(self):
+        search_queries = set()
+        for (q, cgpt) in self.keywords:
+            search_queries.add(q + " AND " + cgpt)
+            search_queries.add(q + " OR " + cgpt)
+        return search_queries
+
 
 class Search(Researcher):
     def __init__(self, search_query, num_results):
@@ -151,7 +235,7 @@ class Search(Researcher):
             }
 
             response = requests.get(config.GGLSEARCH_URL(), params=params)
-            assert (response.status_code > 199 and response.status_code < 300), "Google API Non-Responsive. Check search quotas"
+            assert (int(response.status_code) > 199 and int(response.status_code) < 300), "Google API Non-Responsive. Check search quotas. Error: " + str(response.status_code)
             response = json.loads(response.content)
             response["error"] = 0
             for item in response["items"]:
@@ -163,8 +247,8 @@ class Search(Researcher):
     
 
 class Page(Researcher):
-    def __init__(self, search_query, url): #content, url, ranking):
-        self.search_query = search_query
+    def __init__(self, search_queries, url): #content, url, ranking):
+        self.search_queries = search_queries
         self.url = url
 
         self.content = self.get_webpage_content()
@@ -244,21 +328,20 @@ class Page(Researcher):
         if sentences and not sentences[-1]: sentences = sentences[:-1]
         return sentences
     
-
-    
-class Sentence(Page):
-    def __init__(self, sentences, position, context_window):
-        self.sentences = sentences
-        self.position = position
-        self.text = self.sentences[position]
+    def get_sentence_content(self, position, context_window):
+        text = self.sentences[position]
         pre_context, post_context = "", ""
         if position > 0 and context_window > 0:
                 pre_context = " ".join(self.sentences[max(0, position-context_window):position]).strip()
         if position < len(self.sentences) - 1 and context_window > 0:
             post_context = " ".join(self.sentences[position+1:min(len(self.sentences)-1, position+context_window+1)]).strip()
-        self.context = pre_context + " " + self.text + " " + post_context
-        
-        self.vector = self.embedding(self.text)
+        return pre_context + " " + text + " " + post_context
+    
+class Sentence(Page):
+    def __init__(self, sentence, context):
+        self.sentence = sentence
+        self.context = context
+        self.vector = self.embedding(self.sentence)
 
     def similarity_to_query(self, query_vector):
         """return a scalar on [0,1] to indicate similarity
@@ -271,36 +354,10 @@ class Sentence(Page):
         """
         return cosine(self.vector, query_vector)
     
-    def relation_to_query(self, query):
+    def get_relation_to_query(self, query):
         textual_relations = ["contradiction", "entailment", "neutral"]
-        relation = Researcher.classifier(self.text + " " + query, textual_relations)
+        relation = Researcher.classifier(self.sentence + " " + query, textual_relations)
         self.relation_to_query = relation
 
 if __name__ == "__main__":
-    # queries = ["climate change AND global warming", "climate change OR global warming"]
-    queries = ["Mona Lisa AND Leonardo da Vinci", "Mona Lisa or Leonardo da Vinci", "Mathematics AND Leonardo da Vinci", "Mathematics OR Leonardo da Vinci"]
-    
-    researcher = Researcher(queries)
-
-    import threading
-
-    def create_page(search_query, url, pages):
-        page = Page(search_query,url)
-        pages.append(page)
-
-    pages = []
-    threads = []
-    for (search_query, url) in researcher.urls:
-        threads.append(threading.Thread(target=create_page, args=(search_query,url,pages)))
-    
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    
-    print(len(pages))
-    for page in pages:
-        if page.content:
-            print(page.sentences)
-            break
-
+    pass
