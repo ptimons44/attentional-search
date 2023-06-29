@@ -20,3 +20,7 @@ def callGPT(prompt, max_tokens=0):
     # if gpt 4
     else:
        pass
+    
+if __name__ == "__main__":
+   rspns = callGPT("What day is it today?")
+   print(rspns)

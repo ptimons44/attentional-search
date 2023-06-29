@@ -1,153 +1,47 @@
+# Researcher.py
 import re
-import threading
 
 import requests
 from bs4 import BeautifulSoup
 import json
 
-import torch
-from transformers import BertTokenizer, BertModel
-from transformers import pipeline
-from scipy.spatial.distance import cosine
 
 import spacy 
 
-from information_extraction.gpt import callGPT
+from gpt import callGPT
 import config
 
-class Researcher:
-    # Load pre-trained model (weights)
-    model = BertModel.from_pretrained('bert-base-uncased',
-                                    output_hidden_states = True, # Whether the model returns all hidden-states.
-                                    )
-    # Put the model in "evaluation" mode, meaning feed-forward operation.
-    model.eval()
-    # Load pre-trained model tokenizer (vocabulary)
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+import time
 
-    classifier = pipeline('zero-shot-classification', model='roberta-large-mnli')
-    nlp = spacy.load("en_core_web_sm")
+from sentence_transformers import SentenceTransformer, util
 
-    def __init__(self, query, num_results=10, context_window=2):
-        self.query = query
-        self.query_vector = self.embedding(self.query)
+    
+class Parser:
+    def __init__(self, researcher):
+        self.researcher = researcher
 
-        self.gpt_response = self.ask_gpt_query(query)
-        self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response) 
-        self.parser = Parser(query, self.gpt_response, self.nlp, threshold=0.4)
-        self.gpt_keywords = self.parser.keywords
-        self.gpt_keyword_sentence_mapping = self.parser.gpt_keyword_sentence_mapping
+        self.search_queries = self.generate_search_queries(
+            self.researcher.query, 
+            self.researcher.gpt_response, 
+            self.researcher.nlp,
+            self.researcher.threshold
+        )
 
-        self.queries = self.parser.search_queries
-
-        self.num_results = num_results
-        self.context_window = context_window
-        
-        self.urls = dict()
-        self.fetch_urls()
-
-        self.pages = {}
-        self.create_pages()
-
-    def ask_gpt_query(self, query):
-        with open("query_graph/information_extraction/gpt_prompts.json", "r") as f:
-            prompt = json.loads(f.read())["initial prompt"]
-        prompt += query
-        response = callGPT(prompt)
-        return response
-
-        
-    def fetch_urls(self):
-        for search_query in self.queries:
-            search = Search(search_query, self.num_results)
-            for url in search.search_google():
-                if url not in self.urls:
-                    self.urls[url] = {search_query}
-                else:
-                    self.urls[url].add(search_query)
-
-    def create_pages(self):
-        def create_page(search_queries, url, pages):
-            page = Page(search_queries,url)
-            pages[url] = page
-
-        threads = []
-        for url in self.urls:
-            search_queries = self.urls[url]
-            threads.append(threading.Thread(target=create_page, args=(search_queries,url,self.pages)))
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-
-    def top_k_similar_sentences(self, k=100, resolution=10000):
-        similarities = [[] for _ in range(resolution)]
-        num_sentences = 0
-        for page in self.pages:
-            if self.pages[page].content:
-                for (position, sentence) in enumerate(self.pages[page].sentences):
-                    sent = Sentence(sentence, self.pages[page].get_sentence_content(position, self.context_window))
-                    similarity = sent.similarity_to_query(self.query_vector)
-                    similarities[int(similarity*resolution)].append(sent)
-                    num_sentences += 1
-        
-        k = min(k, num_sentences)
-        top_k = [""]*k
-        count = 0
-        for similarity in similarities:
-            for sentence in similarity:
-                if count == k:
-                    break
-                top_k[count] = sentence
-                count += 1
-        return top_k   
-
-    def embedding(self, text, context=""):
-        # Add the special tokens.
-        marked_text = "[CLS] " + text + " [SEP]"
-        
-        # Split the sentence into tokens.
-        tokenized_text = Researcher.tokenizer.tokenize(marked_text)
-
-        # Map the token strings to their vocabulary indeces.
-        indexed_tokens = Researcher.tokenizer.convert_tokens_to_ids(tokenized_text)
-
-        # Mark each of the 22 tokens as belonging to sentence "1".
-        segments_ids = [1] * len(tokenized_text)
-        # Convert inputs to PyTorch tensors
-        tokens_tensor = torch.tensor([indexed_tokens])
-        segments_tensors = torch.tensor([segments_ids])
-
-        # Run the text through BERT, and collect all of the hidden states produced
-        # from all 12 layers. 
-        with torch.no_grad():
-
-            outputs = Researcher.model(tokens_tensor, segments_tensors)
-
-            # Evaluating the model will return a different number of objects based on 
-            # how it's  configured in the `from_pretrained` call earlier. In this case, 
-            # becase we set `output_hidden_states = True`, the third item will be the 
-            # hidden states from all layers. See the documentation for more details:
-            # https://huggingface.co/transformers/model_doc/bert.html#bertmodel
-            hidden_states = outputs[2]
-
-        # `hidden_states` has shape [13 x 1 x 22 x 768]
-
-        # `token_vecs` is a tensor with shape [22 x 768]
-        token_vecs = hidden_states[-2][0]
-
-        # Calculate the average of all 22 token vectors.
-        sentence_embedding = torch.mean(token_vecs, dim=0)
-        return sentence_embedding
-
-class Parser(Researcher):
-    def __init__(self, query, gpt_response, nlp, threshold=0.4):
-        self.query = query
-        self.gpt_response = gpt_response
-        self.nlp = nlp
-        self.threshold = threshold
-        self.keywords, self.gpt_keyword_sentence_mapping = self.extract_keywords()
-        self.search_queries = self.generate_search_queries()
+    def levenshtein_distance(self, s1, s2):
+        if len(s1) < len(s2):
+            return self.levenshtein_distance(s2, s1)
+        if len(s2) == 0:
+            return len(s1)
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        return previous_row[-1]
 
     def get_sentence_index(self, phrase, sentences):
         """_summary_
@@ -165,7 +59,8 @@ class Parser(Researcher):
                 break
         return index
 
-    def extract_keywords(self):
+    # TODO: This may be a good thing to replace with LangChain
+    def generate_search_queries(self, query, gpt_response, nlp, threshold):
         """_summary_
 
         Args:
@@ -175,59 +70,91 @@ class Parser(Researcher):
         Returns:
             list: list of strings, where each string is a noun phrase
         """
-        gpt_doc = self.nlp(self.gpt_response)
-        query_doc = self.nlp(self.query)
+        gpt_doc = nlp(gpt_response)
+        query_doc = nlp(query)
         gpt_keywords = list(gpt_doc.noun_chunks)
         query_keywords = list(query_doc.noun_chunks)
         gpt_sentences = list(gpt_doc.sents)
 
-        keywords = set()
-        gpt_keyword_sentence_mapping = dict()
+        search_queries = set()
         for gpt_word in gpt_keywords:
             max_similarity = 1
             most_similar = None
             for query_word in query_keywords:
+                is_duplicate = False
+
                 similarity = cosine(gpt_word.vector, query_word.vector)
                 if similarity < max_similarity:
                     max_similarity = similarity
                     most_similar = query_word
             
-            if max_similarity <= self.threshold:
-                keywords.add((most_similar.text, gpt_word.text))
-                # create keyword to sentence mapping
+            if max_similarity <= threshold:
                 position = self.get_sentence_index(gpt_word, gpt_sentences)
-                gpt_keyword_sentence_mapping[gpt_word.text] = position
-        return keywords, gpt_keyword_sentence_mapping
 
-    def generate_search_queries(self):
-        search_queries = set()
-        for (q, cgpt) in self.keywords:
-            search_queries.add(q + " AND " + cgpt)
-            search_queries.add(q + " OR " + cgpt)
+                # disregard search_query if we have already generated a similar search_query
+                for generated_query in search_queries:
+                    distance = self.levenshtein_distance(
+                        generated_query.query_keyword + " " + generated_query.gpt_keyword,
+                        query_word.text + " " + gpt_word.text
+                    )
+                    if distance < self.researcher.similarity_threshold:
+                        generated_query.gpt_sentences.append(position)
+                        is_duplicate = True
+                
+                if is_duplicate:
+                    continue
+
+                OR_search_query = SearchQuery(
+                    most_similar.text + " OR " + gpt_word.text, 
+                    most_similar.text,
+                    gpt_word.text,
+                    [position]
+                )
+                search_queries.add(OR_search_query)
+
+                # disregard AND query if the phrases are near duplicates / spelling variations
+                if self.levenshtein_distance(most_similar.text, gpt_word.text) < 3:
+                    continue
+
+                AND_search_query = SearchQuery(
+                    most_similar.text + " AND " + gpt_word.text, 
+                    most_similar.text,
+                    gpt_word.text,
+                    [position]
+                )
+                search_queries.add(AND_search_query)
+                
+            
         return search_queries
 
 
-class Search(Researcher):
-    def __init__(self, search_query, num_results):
-        self.search_query = search_query    
-        self.num_results = num_results
+class SearchQuery:
+    def __init__(self, text, query_keyword, gpt_keyword, gpt_sentences):
+        self.text = text
+        self.query_keyword = query_keyword
+        self.gpt_keyword = gpt_keyword
+        self.gpt_sentences = gpt_sentences
 
-    def search_google(self):
+class Search:
+    def __init__(self, search_query):
+        self.search_query = search_query  
+
+    def search_google(self, results_per_search):
         """
         before is string in YYYY-MM-DD format
         """
         output = []
-        while self.num_results > 0:
-            if self.num_results < 10:
+        while results_per_search > 0:
+            if results_per_search < 10:
                 page=1
-                num=self.num_results
+                num=results_per_search
             else:
                 num=10
                 page=1
             params = {
                 "key": config.GGLSEARCH_APIKEY(),
                 "cx": config.GGL_SE(),
-                "q": self.search_query,
+                "q": self.search_query.text,
                 "h1": "en",
                 "lr": "lang_en",
                 "page": page,
@@ -240,25 +167,90 @@ class Search(Researcher):
             response["error"] = 0
             for item in response["items"]:
                 output.append(item)
-            self.num_results -= num
+            results_per_search -= num
             page += 1
-
         return list(item["link"] for item in output)
+
+
+
+
+class Researcher(object):
+    def __init__(self, query, **kwargs):
+        self.query = query
+        self.config = config
+        self.threshold = kwargs.get("threshold", 0.4)
+        self.similarity_threshold = kwargs.get("similarity_threshold", 12)
+        self.results_per_search = kwargs.get("results_per_search", 5)
+        self.num_nodes = kwargs.get("num_nodes", 100)
+        self.context_window = kwargs.get("context_window", 2)
+        self.search_resolution = kwargs.get("search_resolution", 10000) 
+
+        self.nlp = kwargs.get("nlp", spacy.load("en_core_web_sm"))
+        self.model =  kwargs.get("model", SentenceTransformer('multi-qa-MiniLM-L6-cos-v1'))
+
+        self.gpt_response = self.ask_gpt_query(query)
+        self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response) 
+
+        self.parser = Parser(self)
+        self.search_queries = self.parser.search_queries
+
+
+    def ask_gpt_query(self, query):
+        with open("query_graph/gpt_prompts.json", "r") as f:
+            prompt = json.loads(f.read())["initial prompt"]
+        prompt += query
+        response = callGPT(prompt)
+        return response
+    
+    def get_urls(self, search_query, url_dict):
+        """_summary_
+
+        Args:
+            url_dict (shared dictionary): maps url (string) to search queries (set of strings)
+            search_query (_type_): _description_
+        """
+        search = Search(search_query)
+        for url in search.search_google(self.results_per_search):
+            if url not in url_dict:
+                url_dict[url] = {search_query}
+            else:
+                url_dict[url].add(search_query)
+
+    def create_page(self, search_queries, url, pages_dict):
+        page = Page(search_queries, url)
+        pages_dict[url] = page
+
+
+    def create_sentence(self, search_queries, sentence_text, context, model, sentence_list):
+        # print("creating sentence: ", sentence_text)
+        sentence = Sentence(
+            search_queries,
+            sentence_text,
+            context
+        )
+        sentence.embedding = model.encode(sentence.sentence)
+        sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
+        sentence_list.append(sentence)
+
     
 
-class Page(Researcher):
+class Page():
     def __init__(self, search_queries, url): #content, url, ranking):
-        self.search_queries = search_queries
+        self.search_queries = search_queries # the search query(ies) that returned this page
         self.url = url
 
         self.content = self.get_webpage_content()
         if self.content:
             self.sentences = self.split_into_sentences(self.content)
+        else:
+            self.sentneces = []
 
     def get_webpage_content(self):
+        # print("getting content from", self.url)
         try:
             # Send a GET request to the specified URL
             response = requests.get(self.url)
+            # print("retrieving content from", self.url)
 
             # Check if the request was successful (status code 200)
             if response.status_code == 200:
@@ -269,13 +261,14 @@ class Page(Researcher):
                 # For example, if you want to get the text from all paragraphs:
                 paragraphs = soup.find_all('p')
                 content = ' '.join([p.get_text() for p in paragraphs])
-
+                
                 return content
             else:
                 print("Request failed with status code:", response.status_code)
         except requests.RequestException as e:
             print("An error occurred:", str(e))
-
+        
+        # print("unable to retrieve content from", self.url)
         return None
 
 
@@ -338,26 +331,40 @@ class Page(Researcher):
         return pre_context + " " + text + " " + post_context
     
 class Sentence(Page):
-    def __init__(self, sentence, context):
+    def __init__(self, search_queries, sentence, context):
+        self.search_queries = search_queries
         self.sentence = sentence
         self.context = context
-        self.vector = self.embedding(self.sentence)
+        # self.vector = nlp_utils.embedding(self.sentence)
+        self.similarities = {} # populated in get_top_k_similar_sentences
+        self.relation_to_gpt = {} # populated in get_relation_to_gpt
 
-    def similarity_to_query(self, query_vector):
-        """return a scalar on [0,1] to indicate similarity
+    # def similarity_to_embedding(self, sentence_embedding):
+    #     """return a scalar on [0,1] to indicate similarity
 
-        Args:
-            query (vector): embedding of search query
+    #     Args:
+    #         query (vector): embedding of search query
 
-        Returns:
-            _type_: _description_
-        """
-        return cosine(self.vector, query_vector)
+    #     Returns:
+    #         _type_: _description_
+    #     """
+    #     return cosine(self.vector, sentence_embedding)
     
-    def get_relation_to_query(self, query):
-        textual_relations = ["contradiction", "entailment", "neutral"]
-        relation = Researcher.classifier(self.sentence + " " + query, textual_relations)
-        self.relation_to_query = relation
+    # def get_relation_to_gpt(self, nlp_utils, gpt_sentences):
+    #     for gpt_sentex_index in self.similarities:
+    #         textual_relations = ["contradiction", "entailment", "neutral"]
+    #         relation = nlp_utils.classifier(self.sentence + " " + gpt_sentences[gpt_sentex_index], textual_relations)
+    #         self.relation_to_gpt[gpt_sentex_index] = relation
+
+def get_relevance(sentence):
+    return sentence.relevance
 
 if __name__ == "__main__":
-    pass
+    # test cases testing if get_relevance can be a key to sort sentences by similarity
+    sentences = [Sentence("a", "a", "a"), Sentence("b", "b", "b"), Sentence("c", "c", "c")]
+    # set each sentence in sentences to have a different relevance
+    for i, sentence in enumerate(sentences):
+        sentence.relevance = 10-i
+    sentences.sort(key=get_relevance)
+    for sentence in sentences:
+        print(sentence.relevance, sentence.sentence)
