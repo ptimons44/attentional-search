@@ -161,3 +161,6 @@ cython_debug/
 
 # config file
 /query_graph/config.py
+
+# test file
+/query_graph/test.py
