@@ -14,7 +14,7 @@ import os
 os.environ['TOKENIZERS_PARALLELISM'] = "true"
 
 import torch
-device = torch.device("cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
+# device = torch.device("cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
 
 
 def get_relevance(sentence):
@@ -65,8 +65,8 @@ def get_sentences_and_pages(researcher, model, parallelize_create_pages=True):
     finish_time = time.perf_counter()
     logging.debug(f"sorted nodes by similarity in {finish_time-start_time} seconds")
 
-def pipeline(query, num_nodes=50, parallelize_get_urls=True, parallelize_create_pages=True, parallelize_create_sentences=False, serialize_researcher=True, filename="researcher.pkl", deserialize_researcher=False):
-    model = SentenceTransformer('multi-qa-MiniLM-L6-cos-v1')
+def pipeline(query, num_nodes=50, parallelize_get_urls=True, parallelize_create_pages=True):
+    model = SentenceTransformer('multi-qa-MiniLM-L6-cos-v1', device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
     nlp = spacy.load("en_core_web_sm")
     researcher = Researcher(query, nlp=nlp, num_nodes=num_nodes)
     researcher.gpt_response_embedding = model.encode(researcher.gpt_response)
@@ -86,23 +86,40 @@ def pipeline(query, num_nodes=50, parallelize_get_urls=True, parallelize_create_
 
     return researcher
     
+def ordinal(n):
+    if str(n)[-1] == '1':
+        return str(n) + 'st'
+    elif str(n)[-1] == '2':
+        return str(n) + 'nd'
+    elif str(n)[-1] == '3':
+        return str(n) + 'rd'
+    else:
+        return str(n) + 'th'
 
 if __name__ == "__main__":
-    logging.debug("starting new run")
     start = time.perf_counter()
-    query = "Was the 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots?"
-    # query = "Is it true that Issac Newton was the first person to discover calculus."
-    # query = "Is it true that Neil Armstrong never went to space and that he was a paid actor by the inner circle, AKA NASA?"
-    researcher = pipeline(query, num_nodes=25)
+    query = input("Enter query: ")
+    if query == "":
+        query = "Is it true that Neil Armstrong never went to space and that he was a paid actor by the inner circle, AKA NASA?"
+    logging.debug("starting new run with query: " + query)
+    
+    num_nodes = input("Enter number of nodes (usually on order of 25-150): ")
+    try:
+        num_nodes = int(num_nodes)
+    except:
+        num_nodes = 25
+    print("Asking ChatGPT for response...")
+
+    researcher = pipeline(query, num_nodes=num_nodes)
+    end = time.perf_counter()
+    logging.info(f"finished in {end-start} seconds")
 
     # output
-    print("\n\noutput:")
-    end = time.time()
-    for node in researcher.nodes:
+    print("\n\nContent from the Web (obtained via Google Search):")
+    for (index, node) in enumerate(researcher.nodes):
         # print(node.relation_to_gpt)
+        print(f"{ordinal(index+1)} most similar sentence to ChatGPT's response. Relevance to ChatGPT's response: ", node.relevance)
         print(node.context)
-        print(node.relevance)
+        print("Most relevant ChatGPT sentences:")
         print([researcher.gpt_sentences[idx] for (idx, val) in enumerate(node.relevant_sentences[0]) if val.item()])
         print("\n\n")
-    end = time.perf_counter()
-    print(f"finished in {end-start} seconds")
