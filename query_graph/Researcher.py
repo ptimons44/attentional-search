@@ -1,5 +1,6 @@
 # Researcher.py
 import re
+import logging
 
 import requests
 from bs4 import BeautifulSoup
@@ -7,6 +8,7 @@ import json
 
 
 import spacy 
+from scipy.spatial.distance import cosine
 
 from gpt import callGPT
 import config
@@ -17,13 +19,13 @@ from sentence_transformers import SentenceTransformer, util
 
     
 class Parser:
-    def __init__(self, researcher):
+    def __init__(self, researcher, nlp):
         self.researcher = researcher
 
         self.search_queries = self.generate_search_queries(
             self.researcher.query, 
             self.researcher.gpt_response, 
-            self.researcher.nlp,
+            nlp,
             self.researcher.threshold
         )
 
@@ -177,7 +179,7 @@ class Search:
 class Researcher(object):
     def __init__(self, query, **kwargs):
         self.query = query
-        self.config = config
+        # self.config = config
         self.threshold = kwargs.get("threshold", 0.4)
         self.similarity_threshold = kwargs.get("similarity_threshold", 12)
         self.results_per_search = kwargs.get("results_per_search", 5)
@@ -185,13 +187,12 @@ class Researcher(object):
         self.context_window = kwargs.get("context_window", 2)
         self.search_resolution = kwargs.get("search_resolution", 10000) 
 
-        self.nlp = kwargs.get("nlp", spacy.load("en_core_web_sm"))
-        self.model =  kwargs.get("model", SentenceTransformer('multi-qa-MiniLM-L6-cos-v1'))
+        nlp = kwargs.get("nlp", spacy.load("en_core_web_sm"))
 
         self.gpt_response = self.ask_gpt_query(query)
         self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response) 
 
-        self.parser = Parser(self)
+        self.parser = Parser(self, nlp)
         self.search_queries = self.parser.search_queries
 
 
@@ -220,17 +221,33 @@ class Researcher(object):
         page = Page(search_queries, url)
         pages_dict[url] = page
 
+    def create_pages_and_sentences(self, search_queries, url, sentence_list, model):
+        logging.debug("creating page: " + url)
+        page = Page(search_queries, url)
+        logging.debug("finished initializing page: " + url)
+        if page.content:
+            for (position, sentence_text) in enumerate(page.sentences):
+                context = page.get_sentence_content(position, self.context_window)
+                sentence = Sentence(
+                    search_queries,
+                    sentence_text,
+                    context
+                )
+                sentence.embedding = model.encode(sentence.sentence)
+                sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
+                sentence_list.append(sentence)
+        logging.debug("finished searching for sentences " + url)
 
-    def create_sentence(self, search_queries, sentence_text, context, model, sentence_list):
-        # print("creating sentence: ", sentence_text)
-        sentence = Sentence(
-            search_queries,
-            sentence_text,
-            context
-        )
-        sentence.embedding = model.encode(sentence.sentence)
-        sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
-        sentence_list.append(sentence)
+    # def create_sentence(self, search_queries, sentence_text, context, model, sentence_list):
+    #     # print("creating sentence: ", sentence_text)
+    #     sentence = Sentence(
+    #         search_queries,
+    #         sentence_text,
+    #         context
+    #     )
+    #     sentence.embedding = model.encode(sentence.sentence)
+    #     sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
+    #     sentence_list.append(sentence)
 
     
 
@@ -246,11 +263,11 @@ class Page():
             self.sentneces = []
 
     def get_webpage_content(self):
-        # print("getting content from", self.url)
+        logging.debug("getting content from " + self.url)
         try:
             # Send a GET request to the specified URL
             response = requests.get(self.url)
-            # print("retrieving content from", self.url)
+            logging.debug("retrieving content from " + self.url)
 
             # Check if the request was successful (status code 200)
             if response.status_code == 200:
@@ -262,13 +279,14 @@ class Page():
                 paragraphs = soup.find_all('p')
                 content = ' '.join([p.get_text() for p in paragraphs])
                 
+                logging.debug("returning content from " + self.url)
                 return content
             else:
-                print("Request failed with status code:", response.status_code)
+                logging.debug("Request failed with status code: " + str(response.status_code))
         except requests.RequestException as e:
-            print("An error occurred:", str(e))
+            logging.debug("An error occurred: " + str(e))
         
-        # print("unable to retrieve content from", self.url)
+        logging.debug("unable to retrieve content from " + self.url)
         return None
 
 
@@ -335,36 +353,5 @@ class Sentence(Page):
         self.search_queries = search_queries
         self.sentence = sentence
         self.context = context
-        # self.vector = nlp_utils.embedding(self.sentence)
         self.similarities = {} # populated in get_top_k_similar_sentences
         self.relation_to_gpt = {} # populated in get_relation_to_gpt
-
-    # def similarity_to_embedding(self, sentence_embedding):
-    #     """return a scalar on [0,1] to indicate similarity
-
-    #     Args:
-    #         query (vector): embedding of search query
-
-    #     Returns:
-    #         _type_: _description_
-    #     """
-    #     return cosine(self.vector, sentence_embedding)
-    
-    # def get_relation_to_gpt(self, nlp_utils, gpt_sentences):
-    #     for gpt_sentex_index in self.similarities:
-    #         textual_relations = ["contradiction", "entailment", "neutral"]
-    #         relation = nlp_utils.classifier(self.sentence + " " + gpt_sentences[gpt_sentex_index], textual_relations)
-    #         self.relation_to_gpt[gpt_sentex_index] = relation
-
-def get_relevance(sentence):
-    return sentence.relevance
-
-if __name__ == "__main__":
-    # test cases testing if get_relevance can be a key to sort sentences by similarity
-    sentences = [Sentence("a", "a", "a"), Sentence("b", "b", "b"), Sentence("c", "c", "c")]
-    # set each sentence in sentences to have a different relevance
-    for i, sentence in enumerate(sentences):
-        sentence.relevance = 10-i
-    sentences.sort(key=get_relevance)
-    for sentence in sentences:
-        print(sentence.relevance, sentence.sentence)
