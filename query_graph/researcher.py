@@ -1,6 +1,9 @@
 # Researcher.py
 import re
+
 import logging
+logging.basicConfig(filename='query_graph.log', encoding='utf-8', level=logging.DEBUG)
+
 
 import requests
 from bs4 import BeautifulSoup
@@ -221,21 +224,23 @@ class Researcher(object):
         page = Page(search_queries, url)
         pages_dict[url] = page
 
-    def create_pages_and_sentences(self, search_queries, url, sentence_list, model):
+    def create_pages_and_sentences(self, search_queries, url, sentence_list):
         logging.debug("creating page: " + url)
         page = Page(search_queries, url)
         logging.debug("finished initializing page: " + url)
         if page.content:
             for (position, sentence_text) in enumerate(page.sentences):
-                context = page.get_sentence_content(position, self.context_window)
-                sentence = Sentence(
-                    search_queries,
-                    sentence_text,
-                    context
+                sentence_list.append(
+                    Sentence(
+                        search_queries,
+                        sentence_text,
+                        page.get_sentence_content(position, self.context_window), # context
+                        len(sentence_list) # index
+                    )
                 )
-                sentence.embedding = model.encode(sentence.sentence)
-                sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
-                sentence_list.append(sentence)
+                # sentence.embedding = model.encode(sentence.sentence)
+                # sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
+                # sentence_list.append(sentence)
         logging.debug("finished searching for sentences " + url)
 
     # def create_sentence(self, search_queries, sentence_text, context, model, sentence_list):
@@ -245,8 +250,6 @@ class Researcher(object):
     #         sentence_text,
     #         context
     #     )
-    #     sentence.embedding = model.encode(sentence.sentence)
-    #     sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
     #     sentence_list.append(sentence)
 
     
@@ -349,9 +352,15 @@ class Page():
         return pre_context + " " + text + " " + post_context
     
 class Sentence(Page):
-    def __init__(self, search_queries, sentence, context):
+    def __init__(self, search_queries, sentence, context, index):
         self.search_queries = search_queries
-        self.sentence = sentence
+        self.text = sentence
         self.context = context
-        self.similarities = {} # populated in get_top_k_similar_sentences
-        self.relation_to_gpt = {} # populated in get_relation_to_gpt
+        self.index = index
+
+        # self.similarities = {} # populated in get_top_k_similar_sentences
+        # self.relation_to_gpt = {} # populated in get_relation_to_gpt
+
+if __name__ == "__main__":
+    page = Page({"Marajuana"}, "https://www.fox13now.com/2013/12/30/new-year-new-laws-obamacare-pot-guns-and-drones")
+    print(page.sentences)

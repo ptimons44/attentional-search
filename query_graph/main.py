@@ -9,7 +9,7 @@ import spacy
 
 from researcher import Researcher
 from sentence_transformers import SentenceTransformer, util
-
+from tqdm import tqdm
 import os
 os.environ['TOKENIZERS_PARALLELISM'] = "true"
 
@@ -17,8 +17,7 @@ import torch
 # device = torch.device("cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
 
 
-def get_relevance(sentence):
-    return -sentence.relevance
+
 
 def get_urls(researcher, parallelize_get_urls=True):
     ### parallelized url retrevial
@@ -40,7 +39,12 @@ def get_urls(researcher, parallelize_get_urls=True):
 
     logging.debug(f"Gathered URL's in {finish_time-start_time} seconds")
 
-def get_sentences_and_pages(researcher, model, parallelize_create_pages=True):
+def get_relevance(sentence):
+    print(sentence)
+    print(sentence.text)
+    return -sentence.relevance
+
+def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BATCH_SIZE = 1024):
     ### parallelized page creation
     logging.debug("starting page and sentences creation")
     manager = Manager()
@@ -50,17 +54,47 @@ def get_sentences_and_pages(researcher, model, parallelize_create_pages=True):
     start_time = time.perf_counter()
     if parallelize_create_pages:
         # create_pages_and_sentences(self, search_queries, url, sentence_list, model)
-        Parallel(n_jobs=4, backend="loky")(delayed(researcher.create_pages_and_sentences)(researcher.urls[url], url, sentences_list, model) for url in researcher.urls)
+        Parallel(n_jobs=-1, backend="loky")(delayed(researcher.create_pages_and_sentences)(researcher.urls[url], url, sentences_list) for url in researcher.urls)
     else:
         for url in researcher.urls:
-            researcher.create_pages_and_sentences(researcher.urls[url], url, sentences_list, model)
+            researcher.create_pages_and_sentences(researcher.urls[url], url, sentences_list)
     finish_time = time.perf_counter()
     logging.debug(f"Created sentences in {finish_time-start_time} seconds")
 
+    logging.debug("batching sentence embeddings")
+    print(f"Batching sentence embeddings for {len(sentences_list)} sentences")
+    start = time.perf_counter()
+    all_embeddings = []
+    for i in tqdm(range(0, len(sentences_list), BATCH_SIZE), desc="batching sentence embeddings"):
+        embeddings = model.encode(
+            list(sentence.text for sentence in sentences_list[i:i+BATCH_SIZE]), 
+            batch_size=len(sentences_list[i:i+BATCH_SIZE]), 
+            show_progress_bar=False, 
+            device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu"
+        )
+        all_embeddings.append(embeddings)
+
+    all_relevancies = []
+    for i in tqdm(range(0, len(all_embeddings)), desc="batching sentence relevancy"):
+        relevancies = util.cos_sim(
+            all_embeddings[i],
+            researcher.gpt_response_embedding
+        )
+        all_relevancies.append(relevancies)
+    finish = time.perf_counter()
+    logging.debug(f"finished batching sentence embeddings and relevancies in {finish-start} seconds")
+
+    researcher.nodes = [s for s in sentences_list] # reassign Sentence objects to researcher.nodes
+    for sentence in researcher.nodes:
+        i, j  = sentence.index // BATCH_SIZE, sentence.index % BATCH_SIZE
+        sentence.embedding = all_embeddings[i][j]
+        sentence.relevance = all_relevancies[i][j].item()
+
+
     logging.debug("sorting sentences")
     start_time = time.perf_counter()
-    sentences_list.sort(key = get_relevance) # lambda function causes pickling error
-    researcher.nodes = sentences_list[:min(researcher.num_nodes, len(sentences_list))]
+    researcher.nodes.sort(key=get_relevance) # lambda function causes pickling error
+    researcher.nodes = researcher.nodes[:min(researcher.num_nodes, len(researcher.nodes))]
     # del sentences_list
     finish_time = time.perf_counter()
     logging.debug(f"sorted nodes by similarity in {finish_time-start_time} seconds")
@@ -79,7 +113,10 @@ def pipeline(query, num_nodes=50, parallelize_get_urls=True, parallelize_create_
     # calculate which gpt sentences are most similar to each node
     researcher.gpt_sentences_embedding = model.encode(researcher.gpt_sentences)
     for node in researcher.nodes:
-        node.gpt_relevance_by_sentence = util.dot_score(node.embedding, researcher.gpt_sentences_embedding)
+        node.gpt_relevance_by_sentence = util.cos_sim(
+            node.embedding,
+            researcher.gpt_sentences_embedding
+        )
         mean = node.gpt_relevance_by_sentence.mean()
         std = node.gpt_relevance_by_sentence.std()
         node.relevant_sentences = node.gpt_relevance_by_sentence > mean + std
@@ -110,7 +147,7 @@ if __name__ == "__main__":
         num_nodes = 25
     print("Asking ChatGPT for response...")
 
-    researcher = pipeline(query, num_nodes=num_nodes)
+    researcher = pipeline(query, num_nodes=num_nodes, parallelize_create_pages=True, parallelize_get_urls=True)
     end = time.perf_counter()
     logging.info(f"finished in {end-start} seconds")
 
@@ -119,7 +156,8 @@ if __name__ == "__main__":
     for (index, node) in enumerate(researcher.nodes):
         # print(node.relation_to_gpt)
         print(f"{ordinal(index+1)} most similar sentence to ChatGPT's response. Relevance to ChatGPT's response: ", node.relevance)
-        print(node.context)
+        print("sentence: ", node.text)
+        print("context: ", node.context)
         print("Most relevant ChatGPT sentences:")
         print([researcher.gpt_sentences[idx] for (idx, val) in enumerate(node.relevant_sentences[0]) if val.item()])
         print("\n\n")
