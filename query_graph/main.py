@@ -76,16 +76,6 @@ def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BA
         )
         all_embeddings.append(embeddings)
 
-    # all_embeddings = []
-    # for i in tqdm(range(0, len(sentences_list), BATCH_SIZE), desc="batching sentence embeddings"):
-    #     embeddings = model.encode(
-    #         list(sentence.text for sentence in sentences_list[i:i+BATCH_SIZE]), 
-    #         batch_size=len(sentences_list[i:i+BATCH_SIZE]), 
-    #         show_progress_bar=False, 
-    #         device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu"
-    #     )
-    #     all_embeddings.append(embeddings)
-
     all_relevancies = []
     for i in tqdm(range(0, len(all_embeddings)), desc="batching sentence relevancy"):
         relevancies = util.cos_sim(
