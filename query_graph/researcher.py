@@ -16,127 +16,151 @@ import time
 
 from sentence_transformers import SentenceTransformer, util
 
+## Boiler plate
+from transformers import BertTokenizer, BertModel
+
+import string
+import numpy as np
+
+
+import nltk
+from nltk.corpus import stopwords
+ 
+# nltk.download('stopwords')
+stop_words = set(stopwords.words('english'))
 
 
     
 class Parser:
-    def __init__(self, researcher, nlp):
+    def __init__(self, researcher):
         self.researcher = researcher
-
-        self.search_queries = self.generate_search_queries(
-            self.researcher.query, 
-            self.researcher.gpt_response, 
-            nlp,
-            self.researcher.threshold
+        self.search_queries = self.get_search_queries(
+            self.researcher.query_sentences, 
+            self.researcher.gpt_sentences
         )
 
-    def levenshtein_distance(self, s1, s2):
-        if len(s1) < len(s2):
-            return self.levenshtein_distance(s2, s1)
-        if len(s2) == 0:
-            return len(s1)
-        previous_row = range(len(s2) + 1)
-        for i, c1 in enumerate(s1):
-            current_row = [i + 1]
-            for j, c2 in enumerate(s2):
-                insertions = previous_row[j + 1] + 1
-                deletions = current_row[j] + 1
-                substitutions = previous_row[j] + (c1 != c2)
-                current_row.append(min(insertions, deletions, substitutions))
-            previous_row = current_row
-        return previous_row[-1]
+    # def levenshtein_distance(self, s1, s2):
+    #     if len(s1) < len(s2):
+    #         return self.levenshtein_distance(s2, s1)
+    #     if len(s2) == 0:
+    #         return len(s1)
+    #     previous_row = range(len(s2) + 1)
+    #     for i, c1 in enumerate(s1):
+    #         current_row = [i + 1]
+    #         for j, c2 in enumerate(s2):
+    #             insertions = previous_row[j + 1] + 1
+    #             deletions = current_row[j] + 1
+    #             substitutions = previous_row[j] + (c1 != c2)
+    #             current_row.append(min(insertions, deletions, substitutions))
+    #         previous_row = current_row
+    #     return previous_row[-1]
 
-    def get_sentence_index(self, phrase, sentences):
-        """_summary_
+    # def get_sentence_index(self, phrase, sentences):
+    #     """_summary_
 
-        Args:
-            phrase (spacy.span): phrase we want the sentence index of
-            sentences (list): list of sentences (spans)
+    #     Args:
+    #         phrase (spacy.span): phrase we want the sentence index of
+    #         sentences (list): list of sentences (spans)
 
-        Returns:
-            int: index of phrase in sentences
-        """
-        for ix, sentence in enumerate(sentences):
-            if sentence.end >= phrase.end:
-                index = ix
-                break
-        return index
+    #     Returns:
+    #         int: index of phrase in sentences
+    #     """
+    #     for ix, sentence in enumerate(sentences):
+    #         if sentence.end >= phrase.end:
+    #             index = ix
+    #             break
+    #     return index
+    
+    def get_token_idx_to_word(self, token_ids, tokenizer):
+        # dictionary mapping token index to (corresponding word, is_child_root) 
+        # parent root is for tracking the chain of updates that we will have to do
+        token_idx_to_word = {}
+        for idx, token in enumerate(token_ids):
+            decoded_token = "".join(tokenizer.decode(token).split())
+            if decoded_token.startswith("##"):
+                is_dependant_morpheme = True
+                decoded_word = token_idx_to_word[idx-1][0] + decoded_token[2:]
+                # update chain of dependant morphemes
+                i = 1
+                while (i == 1 or token_idx_to_word[idx-i+1][1]):
+                    token_idx_to_word[idx-i] = (decoded_word, token_idx_to_word[idx-i][1])
+                    i += 1
+            else:
+                is_dependant_morpheme = False
+                decoded_word = decoded_token
+            token_idx_to_word[idx] = (decoded_word, is_dependant_morpheme)
+        
+        return token_idx_to_word
 
-    # TODO: This may be a good thing to replace with LangChain
-    def generate_search_queries(self, query, gpt_response, nlp, threshold):
-        """_summary_
 
-        Args:
-            input (string): query from which we want to extract keywords
-            nlp (space.Language): a model (either off-the-shelf or custom) that creates Doc object
+    def word_clusters_from_sentence_pair(self, sentence_a, sentence_b, tokenizer, model):
+        inputs = tokenizer.encode_plus(sentence_a, sentence_b, return_tensors='pt')
 
-        Returns:
-            list: list of strings, where each string is a noun phrase
-        """
-        gpt_doc = nlp(gpt_response)
-        query_doc = nlp(query)
-        gpt_keywords = list(gpt_doc.noun_chunks)
-        query_keywords = list(query_doc.noun_chunks)
-        gpt_sentences = list(gpt_doc.sents)
+        # Get token ids for decoding back to words later
+        token_ids = inputs['input_ids'].numpy().squeeze()
+
+        # dictionary mapping token index to (corresponding word, is_child_root) 
+        # parent root is for tracking the chain of updates that we will have to do
+        token_idx_to_word = self.get_token_idx_to_word(token_ids, tokenizer)
+
+        outputs = model(**inputs)
+        last_layer_attentions = outputs.attentions[-1]  # get the last layer's attentions
+        avg_attention = last_layer_attentions.squeeze(0).mean(dim=0)  # average attention across heads
+        attention_matrix = avg_attention.detach().numpy()
+
+        ignore = string.punctuation + '[CLS][SEP]' + '0123456789'
+        kept_tokens = np.array([bool(tokenizer.decode([token_ids[idx]]) not in ignore) for idx in range(attention_matrix.shape[0])])
+
+        clusters = {}
+        for (i, token) in enumerate(attention_matrix[0]):
+            attention_i_to_j = attention_matrix[i,:]
+            mean = attention_i_to_j.mean(where=kept_tokens)
+            std = attention_i_to_j.std(where=kept_tokens)
+            
+            most_attention = {
+                token_idx_to_word[j][0] 
+                for j in range(attention_matrix.shape[1]) 
+                if attention_i_to_j[j] > mean+std 
+                and kept_tokens[j] 
+                and token_idx_to_word[j][0] not in stop_words}
+            attender = token_idx_to_word[i][0]
+
+            if attender not in clusters:
+                clusters[attender] = most_attention
+            else:
+                clusters[attender].union(most_attention)
+
+        kept_keys = clusters['[CLS]'].union(clusters['[SEP]']).union({'[CLS]', '[SEP]'})
+        filtered_clusters = {}
+        for k in kept_keys:
+            filtered_clusters[k] = clusters[k]
+
+        return filtered_clusters
+
+    def get_search_queries(self, query_sentences, gpt_sentences):
+        # Load pre-trained model and tokenizer
+        model_name = 'bert-base-uncased'
+        model = BertModel.from_pretrained(model_name, output_attentions=True)
+        tokenizer = BertTokenizer.from_pretrained(model_name)
+        
+        search_queries_text = set()
+        for query_sentence in query_sentences:
+            for gpt_sentence in gpt_sentences:
+                word_clusters = self.word_clusters_from_sentence_pair(query_sentence, gpt_sentence, tokenizer, model)
+                for k in word_clusters:
+                    search_query_text = " AND ".join(word_clusters[k])
+                    search_queries_text.add(search_query_text)
+
 
         search_queries = set()
-        for gpt_word in gpt_keywords:
-            max_similarity = 1
-            most_similar = None
-            for query_word in query_keywords:
-                is_duplicate = False
-
-                similarity = cosine(gpt_word.vector, query_word.vector)
-                if similarity < max_similarity:
-                    max_similarity = similarity
-                    most_similar = query_word
-            
-            if max_similarity <= threshold:
-                position = self.get_sentence_index(gpt_word, gpt_sentences)
-
-                # disregard search_query if we have already generated a similar search_query
-                for generated_query in search_queries:
-                    distance = self.levenshtein_distance(
-                        generated_query.query_keyword + " " + generated_query.gpt_keyword,
-                        query_word.text + " " + gpt_word.text
-                    )
-                    if distance < self.researcher.similarity_threshold:
-                        generated_query.gpt_sentences.append(position)
-                        is_duplicate = True
-                
-                if is_duplicate:
-                    continue
-
-                OR_search_query = SearchQuery(
-                    most_similar.text + " OR " + gpt_word.text, 
-                    most_similar.text,
-                    gpt_word.text,
-                    [position]
-                )
-                search_queries.add(OR_search_query)
-
-                # disregard AND query if the phrases are near duplicates / spelling variations
-                if self.levenshtein_distance(most_similar.text, gpt_word.text) < 3:
-                    continue
-
-                AND_search_query = SearchQuery(
-                    most_similar.text + " AND " + gpt_word.text, 
-                    most_similar.text,
-                    gpt_word.text,
-                    [position]
-                )
-                search_queries.add(AND_search_query)
-                
-            
+        for search_query_text in search_queries_text:
+            search_queries.add(SearchQuery(search_query_text))
         return search_queries
 
 
 class SearchQuery:
-    def __init__(self, text, query_keyword, gpt_keyword, gpt_sentences):
+    def __init__(self, text):
         self.text = text
-        self.query_keyword = query_keyword
-        self.gpt_keyword = gpt_keyword
-        self.gpt_sentences = gpt_sentences
 
 class Search:
     def __init__(self, search_query):
@@ -188,13 +212,14 @@ class Researcher(object):
         self.context_window = kwargs.get("context_window", 2)
         self.search_resolution = kwargs.get("search_resolution", 10000) 
 
-        nlp = kwargs.get("nlp", spacy.load("en_core_web_sm"))
+        # nlp = kwargs.get("nlp", spacy.load("en_core_web_sm"))
 
         self.gpt_response = self.ask_gpt_query(query)
-        self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response) 
+        self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response)
+        self.query_sentences = Page.split_into_sentences(self, query)
 
-        self.parser = Parser(self, nlp)
-        self.search_queries = self.parser.search_queries
+        parser = Parser(self)
+        self.search_queries = parser.search_queries
         logger.info(f"Trying the following search queries: {[q.text for q in self.search_queries]}")
 
 
@@ -261,8 +286,7 @@ class Page():
             self.sentences = self.split_into_sentences(self.content)
             logger.debug(f"page initialized with {len(self.sentences)} sentences from {self.url}")
             if len(self.sentences) > 500:
-                logger.debug(f"{url} has more than 500 sentences")
-                # logger.debug(f"{url} has more that 500 sentences. Sentences after 500: {self.sentences[500:]}")
+                logger.debug(f"{url} has more than 800 sentences. Truncating to 800 sentences")
         else:
             self.sentneces = []
         
@@ -282,7 +306,11 @@ class Page():
                 # Extract the textual content from the parsed HTML
                 # For example, if you want to get the text from all paragraphs:
                 paragraphs = soup.find_all('p')
-                content = ' '.join([p.get_text() for p in paragraphs])
+                if len(paragraphs) > 200:
+                    logger.debug(f"{self.url} has more than 200 paragraphs. Truncating to 200 paragraphs")
+                    content = ' '.join([p.get_text() for p in paragraphs[:200]])
+                else:
+                    content = ' '.join([p.get_text() for p in paragraphs])
                 
                 logger.debug(f"returning content from {self.url}")
                 return content
@@ -368,21 +396,32 @@ if __name__ == "__main__":
     # for sentence in page.sentences:
     #     print(sentence)
     #     print()
-    gpt_response = """ChatGPT: To determine the deadliest animals in Australia, I would consider various factors such as the number of human fatalities caused by different species, the toxicity or venomous nature of the animals, and the likelihood or frequency of encounters with these dangerous creatures. It is important to note that a species being deadly does not necessarily mean it is aggressive or inclined to attack humans, but rather that it poses a potential threat due to its natural characteristics.
+#     gpt_response = """ChatGPT: To determine the deadliest animals in Australia, I would consider various factors such as the number of human fatalities caused by different species, the toxicity or venomous nature of the animals, and the likelihood or frequency of encounters with these dangerous creatures. It is important to note that a species being deadly does not necessarily mean it is aggressive or inclined to attack humans, but rather that it poses a potential threat due to its natural characteristics.
 
-One of the most feared and deadliest animals in Australia is the saltwater crocodile (Crocodylus porosus). These massive reptiles are known to be highly aggressive and can be found in coastal areas, rivers, and even some open sea areas in the northern parts of Australia. Saltwater crocodiles are responsible for the highest number of reported fatal attacks on humans in the country. They are particularly dangerous as they are excellent swimmers and ambush predators, capable of striking suddenly with their powerful jaws.
+# One of the most feared and deadliest animals in Australia is the saltwater crocodile (Crocodylus porosus). These massive reptiles are known to be highly aggressive and can be found in coastal areas, rivers, and even some open sea areas in the northern parts of Australia. Saltwater crocodiles are responsible for the highest number of reported fatal attacks on humans in the country. They are particularly dangerous as they are excellent swimmers and ambush predators, capable of striking suddenly with their powerful jaws.
 
-Another dangerous animal in Australia is the box jellyfish (Chironex fleckeri). This marine creature, found in the coastal waters of Northern Australia, possesses extremely potent venom in its tentacles. Box jellyfish stings can cause cardiac arrest and death within minutes, making them one of the deadliest creatures in the ocean. While encounters with box jellyfish are rare and there are protective measures in place at popular swimming locations, their presence highlights the need for caution during marine activities.
+# Another dangerous animal in Australia is the box jellyfish (Chironex fleckeri). This marine creature, found in the coastal waters of Northern Australia, possesses extremely potent venom in its tentacles. Box jellyfish stings can cause cardiac arrest and death within minutes, making them one of the deadliest creatures in the ocean. While encounters with box jellyfish are rare and there are protective measures in place at popular swimming locations, their presence highlights the need for caution during marine activities.
 
-Australia is also home to a variety of venomous snakes, including the inland taipan (Oxyuranus microlepidotus) and the eastern brown snake (Pseudonaja textilis). The inland taipan is considered the most venomous snake in the world, with its venom being highly potent and capable of causing rapid paralysis and death. Eastern brown snakes, on the other hand, are responsible for the highest number of snakebite-related deaths in Australia. These snakes are commonly found in populated areas, and their bites can lead to cardiovascular collapse and nervous system failure if not treated promptly.
+# Australia is also home to a variety of venomous snakes, including the inland taipan (Oxyuranus microlepidotus) and the eastern brown snake (Pseudonaja textilis). The inland taipan is considered the most venomous snake in the world, with its venom being highly potent and capable of causing rapid paralysis and death. Eastern brown snakes, on the other hand, are responsible for the highest number of snakebite-related deaths in Australia. These snakes are commonly found in populated areas, and their bites can lead to cardiovascular collapse and nervous system failure if not treated promptly.
 
-In addition to the above, other notable deadly animals in Australia include the Sydney funnel-web spider (Atrax robustus), known for its highly toxic venom, and the cone snail (Conus species), which are marine mollusks that can deliver venomous stings.
+# In addition to the above, other notable deadly animals in Australia include the Sydney funnel-web spider (Atrax robustus), known for its highly toxic venom, and the cone snail (Conus species), which are marine mollusks that can deliver venomous stings.
 
-It is crucial to emphasize that while encounters with these deadly animals can and do occur, the likelihood of such encounters is generally quite low. It is important for residents and visitors to Australia to be aware of their surroundings, follow safety protocols, and seek professional assistance in case of any encounters with dangerous wildlife."""
-    query = "What arte the most dangerous animals in Australia?"
+# It is crucial to emphasize that while encounters with these deadly animals can and do occur, the likelihood of such encounters is generally quite low. It is important for residents and visitors to Australia to be aware of their surroundings, follow safety protocols, and seek professional assistance in case of any encounters with dangerous wildlife."""
+    # query = "Is it true that the 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots."
 
-    query_sentences = Page.split_into_sentences(None, query)
-    gpt_sentences = Page.split_into_sentences(None, gpt_response)
-    print(query_sentences)
-    print(gpt_sentences)
+#     query_sentences = Page.split_into_sentences(None, query)
+#     gpt_sentences = Page.split_into_sentences(None, gpt_response)
+#     print(query_sentences)
+#     print(gpt_sentences)
+
+    query = "Who are the most influential people in the space of Artificial Intellegence?"
+    # researcher = Researcher(query)
+    search_query = SearchQuery("Who are the most influential people in the space of Artificial Intellegence?")
+    search = Search(search_query)
+    urls = search.search_google(5)
+    print(urls)
+    # url_dict = {}
+    # for search_query in researcher.search_queries:
+    #     researcher.get_urls(search_query, url_dict)
+    # print(url_dict)
     
