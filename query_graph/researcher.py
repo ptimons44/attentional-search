@@ -1,10 +1,5 @@
 # Researcher.py
 import re
-
-import logging
-logging.basicConfig(filename='query_graph.log', encoding='utf-8', level=logging.DEBUG)
-
-
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -15,10 +10,13 @@ from scipy.spatial.distance import cosine
 
 from gpt import callGPT
 import config
+from logger import logger
 
 import time
 
 from sentence_transformers import SentenceTransformer, util
+
+
 
     
 class Parser:
@@ -163,7 +161,8 @@ class Search:
                 "h1": "en",
                 "lr": "lang_en",
                 "page": page,
-                "num": num
+                "num": num,
+                # "condition": AUTO # need to fix this
             }
 
             response = requests.get(config.GGLSEARCH_URL(), params=params)
@@ -182,7 +181,6 @@ class Search:
 class Researcher(object):
     def __init__(self, query, **kwargs):
         self.query = query
-        # self.config = config
         self.threshold = kwargs.get("threshold", 0.4)
         self.similarity_threshold = kwargs.get("similarity_threshold", 12)
         self.results_per_search = kwargs.get("results_per_search", 5)
@@ -197,6 +195,7 @@ class Researcher(object):
 
         self.parser = Parser(self, nlp)
         self.search_queries = self.parser.search_queries
+        logger.info(f"Trying the following search queries: {[q.text for q in self.search_queries]}")
 
 
     def ask_gpt_query(self, query):
@@ -225,9 +224,8 @@ class Researcher(object):
         pages_dict[url] = page
 
     def create_pages_and_sentences(self, search_queries, url, sentence_list):
-        logging.debug("creating page: " + url)
+        logger.debug(f"creating page and sentences for {url}")
         page = Page(search_queries, url)
-        logging.debug("finished initializing page: " + url)
         if page.content:
             for (position, sentence_text) in enumerate(page.sentences):
                 sentence_list.append(
@@ -241,7 +239,6 @@ class Researcher(object):
                 # sentence.embedding = model.encode(sentence.sentence)
                 # sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
                 # sentence_list.append(sentence)
-        logging.debug("finished searching for sentences " + url)
 
     # def create_sentence(self, search_queries, sentence_text, context, model, sentence_list):
     #     # print("creating sentence: ", sentence_text)
@@ -262,15 +259,20 @@ class Page():
         self.content = self.get_webpage_content()
         if self.content:
             self.sentences = self.split_into_sentences(self.content)
+            logger.debug(f"page initialized with {len(self.sentences)} sentences from {self.url}")
+            if len(self.sentences) > 500:
+                logger.debug(f"{url} has more than 500 sentences")
+                # logger.debug(f"{url} has more that 500 sentences. Sentences after 500: {self.sentences[500:]}")
         else:
             self.sentneces = []
+        
 
     def get_webpage_content(self):
-        logging.debug("getting content from " + self.url)
+        logger.debug(f"getting content from {self.url}")
         try:
             # Send a GET request to the specified URL
             response = requests.get(self.url)
-            logging.debug("retrieving content from " + self.url)
+            logger.debug(f"retrieving content from {self.url}")
 
             # Check if the request was successful (status code 200)
             if response.status_code == 200:
@@ -282,14 +284,14 @@ class Page():
                 paragraphs = soup.find_all('p')
                 content = ' '.join([p.get_text() for p in paragraphs])
                 
-                logging.debug("returning content from " + self.url)
+                logger.debug(f"returning content from {self.url}")
                 return content
             else:
-                logging.debug("Request failed with status code: " + str(response.status_code))
+                logger.debug(f"Request failed with status code: {response.status_code}")
         except requests.RequestException as e:
-            logging.debug("An error occurred: " + str(e))
+            logger.debug(f"An error occurred: {e}")
         
-        logging.debug("unable to retrieve content from " + self.url)
+        logger.debug(f"unable to retrieve content from {self.url}")
         return None
 
 
@@ -362,5 +364,25 @@ class Sentence(Page):
         # self.relation_to_gpt = {} # populated in get_relation_to_gpt
 
 if __name__ == "__main__":
-    page = Page({"Marajuana"}, "https://www.fox13now.com/2013/12/30/new-year-new-laws-obamacare-pot-guns-and-drones")
-    print(page.sentences)
+    # page = Page({"Marajuana"}, "https://en.wikipedia.org/wiki/Taiwan")
+    # for sentence in page.sentences:
+    #     print(sentence)
+    #     print()
+    gpt_response = """ChatGPT: To determine the deadliest animals in Australia, I would consider various factors such as the number of human fatalities caused by different species, the toxicity or venomous nature of the animals, and the likelihood or frequency of encounters with these dangerous creatures. It is important to note that a species being deadly does not necessarily mean it is aggressive or inclined to attack humans, but rather that it poses a potential threat due to its natural characteristics.
+
+One of the most feared and deadliest animals in Australia is the saltwater crocodile (Crocodylus porosus). These massive reptiles are known to be highly aggressive and can be found in coastal areas, rivers, and even some open sea areas in the northern parts of Australia. Saltwater crocodiles are responsible for the highest number of reported fatal attacks on humans in the country. They are particularly dangerous as they are excellent swimmers and ambush predators, capable of striking suddenly with their powerful jaws.
+
+Another dangerous animal in Australia is the box jellyfish (Chironex fleckeri). This marine creature, found in the coastal waters of Northern Australia, possesses extremely potent venom in its tentacles. Box jellyfish stings can cause cardiac arrest and death within minutes, making them one of the deadliest creatures in the ocean. While encounters with box jellyfish are rare and there are protective measures in place at popular swimming locations, their presence highlights the need for caution during marine activities.
+
+Australia is also home to a variety of venomous snakes, including the inland taipan (Oxyuranus microlepidotus) and the eastern brown snake (Pseudonaja textilis). The inland taipan is considered the most venomous snake in the world, with its venom being highly potent and capable of causing rapid paralysis and death. Eastern brown snakes, on the other hand, are responsible for the highest number of snakebite-related deaths in Australia. These snakes are commonly found in populated areas, and their bites can lead to cardiovascular collapse and nervous system failure if not treated promptly.
+
+In addition to the above, other notable deadly animals in Australia include the Sydney funnel-web spider (Atrax robustus), known for its highly toxic venom, and the cone snail (Conus species), which are marine mollusks that can deliver venomous stings.
+
+It is crucial to emphasize that while encounters with these deadly animals can and do occur, the likelihood of such encounters is generally quite low. It is important for residents and visitors to Australia to be aware of their surroundings, follow safety protocols, and seek professional assistance in case of any encounters with dangerous wildlife."""
+    query = "What arte the most dangerous animals in Australia?"
+
+    query_sentences = Page.split_into_sentences(None, query)
+    gpt_sentences = Page.split_into_sentences(None, gpt_response)
+    print(query_sentences)
+    print(gpt_sentences)
+    

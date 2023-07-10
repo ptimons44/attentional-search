@@ -2,9 +2,6 @@ import time
 from joblib import Parallel, delayed
 from multiprocessing import Manager
 
-import logging
-logging.basicConfig(filename='query_graph.log', encoding='utf-8', level=logging.DEBUG)
-
 import spacy
 
 from researcher import Researcher
@@ -16,12 +13,13 @@ os.environ['TOKENIZERS_PARALLELISM'] = "true"
 import torch
 # device = torch.device("cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
 
+from logger import logger
 
 
 
 def get_urls(researcher, parallelize_get_urls=True):
     ### parallelized url retrevial
-    logging.debug("starting URL retrevial")
+    logger.debug("starting URL retrevial")
     manager = Manager()
     url_dict = manager.dict()
 
@@ -37,16 +35,14 @@ def get_urls(researcher, parallelize_get_urls=True):
     researcher.urls = url_dict
     del url_dict
 
-    logging.debug(f"Gathered URL's in {finish_time-start_time} seconds")
+    logger.debug(f"Gathered URL's in {finish_time-start_time} seconds")
 
 def get_relevance(sentence):
-    print(sentence)
-    print(sentence.text)
     return -sentence.relevance
 
-def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BATCH_SIZE = 1024):
+def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BATCH_SIZE = 512):
     ### parallelized page creation
-    logging.debug("starting page and sentences creation")
+    logger.debug("starting page and sentences creation")
     manager = Manager()
     sentences_list = manager.list([])
 
@@ -59,20 +55,36 @@ def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BA
         for url in researcher.urls:
             researcher.create_pages_and_sentences(researcher.urls[url], url, sentences_list)
     finish_time = time.perf_counter()
-    logging.debug(f"Created sentences in {finish_time-start_time} seconds")
+    logger.debug(f"Created sentences in {finish_time-start_time} seconds")
 
-    logging.debug("batching sentence embeddings")
+    logger.debug("batching sentence embeddings")
+    logger.info(f"Collected {len(sentences_list)} sentences")
     print(f"Batching sentence embeddings for {len(sentences_list)} sentences")
     start = time.perf_counter()
+
+    def sentence_generator(sentences_list, batch_size):
+        for i in range(0, len(sentences_list), batch_size):
+            yield sentences_list[i:i + batch_size]
+
     all_embeddings = []
-    for i in tqdm(range(0, len(sentences_list), BATCH_SIZE), desc="batching sentence embeddings"):
+    for batch_sentences in tqdm(sentence_generator(sentences_list, BATCH_SIZE), desc="batching sentence embeddings"):
         embeddings = model.encode(
-            list(sentence.text for sentence in sentences_list[i:i+BATCH_SIZE]), 
-            batch_size=len(sentences_list[i:i+BATCH_SIZE]), 
-            show_progress_bar=False, 
+            list(sentence.text for sentence in batch_sentences),
+            batch_size=len(batch_sentences),
+            show_progress_bar=False,
             device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu"
         )
         all_embeddings.append(embeddings)
+
+    # all_embeddings = []
+    # for i in tqdm(range(0, len(sentences_list), BATCH_SIZE), desc="batching sentence embeddings"):
+    #     embeddings = model.encode(
+    #         list(sentence.text for sentence in sentences_list[i:i+BATCH_SIZE]), 
+    #         batch_size=len(sentences_list[i:i+BATCH_SIZE]), 
+    #         show_progress_bar=False, 
+    #         device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu"
+    #     )
+    #     all_embeddings.append(embeddings)
 
     all_relevancies = []
     for i in tqdm(range(0, len(all_embeddings)), desc="batching sentence relevancy"):
@@ -82,7 +94,7 @@ def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BA
         )
         all_relevancies.append(relevancies)
     finish = time.perf_counter()
-    logging.debug(f"finished batching sentence embeddings and relevancies in {finish-start} seconds")
+    logger.debug(f"finished batching sentence embeddings and relevancies in {finish-start} seconds")
 
     researcher.nodes = [s for s in sentences_list] # reassign Sentence objects to researcher.nodes
     for sentence in researcher.nodes:
@@ -91,13 +103,13 @@ def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BA
         sentence.relevance = all_relevancies[i][j].item()
 
 
-    logging.debug("sorting sentences")
+    logger.debug("sorting sentences")
     start_time = time.perf_counter()
     researcher.nodes.sort(key=get_relevance) # lambda function causes pickling error
     researcher.nodes = researcher.nodes[:min(researcher.num_nodes, len(researcher.nodes))]
     # del sentences_list
     finish_time = time.perf_counter()
-    logging.debug(f"sorted nodes by similarity in {finish_time-start_time} seconds")
+    logger.debug(f"sorted nodes by similarity in {finish_time-start_time} seconds")
 
 def pipeline(query, num_nodes=50, parallelize_get_urls=True, parallelize_create_pages=True):
     model = SentenceTransformer('multi-qa-MiniLM-L6-cos-v1', device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
@@ -138,7 +150,7 @@ if __name__ == "__main__":
     query = input("Enter query: ")
     if query == "":
         query = "Is it true that Neil Armstrong never went to space and that he was a paid actor by the inner circle, AKA NASA?"
-    logging.debug("starting new run with query: " + query)
+    logger.info("starting new run with query: " + query)
     
     num_nodes = input("Enter number of nodes (usually on order of 25-150): ")
     try:
@@ -146,10 +158,9 @@ if __name__ == "__main__":
     except:
         num_nodes = 25
     print("Asking ChatGPT for response...")
-
     researcher = pipeline(query, num_nodes=num_nodes, parallelize_create_pages=True, parallelize_get_urls=True)
     end = time.perf_counter()
-    logging.info(f"finished in {end-start} seconds")
+    logger.info(f"finished in {end-start} seconds")
 
     # output
     print("\n\nContent from the Web (obtained via Google Search):")
