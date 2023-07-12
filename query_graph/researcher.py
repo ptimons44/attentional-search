@@ -14,6 +14,7 @@ from logger import logger
 
 import time
 
+
 from sentence_transformers import SentenceTransformer, util
 
 ## Boiler plate
@@ -29,6 +30,11 @@ from nltk.corpus import stopwords
 # nltk.download('stopwords')
 stop_words = set(stopwords.words('english'))
 
+import psutil
+def get_memory_usage():
+    memory = psutil.virtual_memory()
+    percent_used = memory.percent
+    return percent_used
 
     
 class Parser:
@@ -250,6 +256,14 @@ class Researcher(object):
 
     def create_pages_and_sentences(self, search_queries, url, sentence_list):
         logger.debug(f"creating page and sentences for {url}")
+
+        # Memory usage
+        memory_usage = get_memory_usage()
+        logger.debug(f"RAM memory % used: {memory_usage}")
+        if memory_usage > 75:
+            logger.info(f"Memory Low. Using: {memory_usage}")
+
+        # creating page
         page = Page(search_queries, url)
         if page.content:
             for (position, sentence_text) in enumerate(page.sentences):
@@ -258,7 +272,8 @@ class Researcher(object):
                         search_queries,
                         sentence_text,
                         page.get_sentence_content(position, self.context_window), # context
-                        len(sentence_list) # index
+                        len(sentence_list), # index
+                        url
                     )
                 )
                 # sentence.embedding = model.encode(sentence.sentence)
@@ -382,11 +397,12 @@ class Page():
         return pre_context + " " + text + " " + post_context
     
 class Sentence(Page):
-    def __init__(self, search_queries, sentence, context, index):
+    def __init__(self, search_queries, sentence, context, index, url):
         self.search_queries = search_queries
         self.text = sentence
         self.context = context
         self.index = index
+        self.url = url
 
         # self.similarities = {} # populated in get_top_k_similar_sentences
         # self.relation_to_gpt = {} # populated in get_relation_to_gpt

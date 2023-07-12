@@ -32,7 +32,7 @@ def get_urls(researcher, parallelize_get_urls=True):
         for search_query in researcher.search_queries:
             researcher.get_urls(search_query, url_dict)
     finish_time = time.perf_counter()
-    researcher.urls = url_dict
+    researcher.urls = dict(url_dict)
     del url_dict
 
     logger.debug(f"Gathered URL's in {finish_time-start_time} seconds")
@@ -50,10 +50,11 @@ def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BA
     start_time = time.perf_counter()
     if parallelize_create_pages:
         # create_pages_and_sentences(self, search_queries, url, sentence_list, model)
-        Parallel(n_jobs=-1, backend="loky")(delayed(researcher.create_pages_and_sentences)(researcher.urls[url], url, sentences_list) for url in researcher.urls)
+        Parallel(n_jobs=4, backend="loky")(delayed(researcher.create_pages_and_sentences)(researcher.urls[url], url, sentences_list) for url in researcher.urls)
     else:
         for url in researcher.urls:
             researcher.create_pages_and_sentences(researcher.urls[url], url, sentences_list)
+    # HUNG
     finish_time = time.perf_counter()
     logger.debug(f"Created sentences in {finish_time-start_time} seconds")
 
@@ -86,7 +87,7 @@ def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BA
     finish = time.perf_counter()
     logger.debug(f"finished batching sentence embeddings and relevancies in {finish-start} seconds")
 
-    researcher.nodes = [s for s in sentences_list] # reassign Sentence objects to researcher.nodes
+    researcher.nodes = list(sentences_list) # reassign Sentence objects to researcher.nodes
     for sentence in researcher.nodes:
         i, j  = sentence.index // BATCH_SIZE, sentence.index % BATCH_SIZE
         sentence.embedding = all_embeddings[i][j]
@@ -123,6 +124,7 @@ def pipeline(query, num_nodes=50, parallelize_get_urls=True, parallelize_create_
         std = node.gpt_relevance_by_sentence.std()
         node.relevant_sentences = node.gpt_relevance_by_sentence > mean + std
 
+    # return "\n\n".join([node.text for node in researcher.nodes])
     return researcher
     
 def ordinal(n):
@@ -134,6 +136,21 @@ def ordinal(n):
         return str(n) + 'rd'
     else:
         return str(n) + 'th'
+    
+import dill
+
+def serialize_object(obj, filename):
+    with open(filename, 'wb') as file:
+        dill.dump(obj, file)
+
+def deserialize_object(filename):
+    with open(filename, 'rb') as file:
+        obj = dill.load(file)
+    return obj
+
+if __name__ == "__main__":
+    filename = "researcher.pkl"
+
 
 if __name__ == "__main__":
     start = time.perf_counter()
@@ -149,6 +166,9 @@ if __name__ == "__main__":
         num_nodes = 25
     print("Asking ChatGPT for response...")
     researcher = pipeline(query, num_nodes=num_nodes, parallelize_create_pages=True, parallelize_get_urls=True)
+    # serialize_object(researcher, "researcher.pkl")
+    # researcher = deserialize_object("researcher.pkl")
+    # raise AssertionError
     end = time.perf_counter()
     logger.info(f"finished in {end-start} seconds")
 
@@ -161,4 +181,6 @@ if __name__ == "__main__":
         print("context: ", node.context)
         print("Most relevant ChatGPT sentences:")
         print([researcher.gpt_sentences[idx] for (idx, val) in enumerate(node.relevant_sentences[0]) if val.item()])
+        print("url", node.url)
+        print("search queries", node.search_queries)
         print("\n\n")
