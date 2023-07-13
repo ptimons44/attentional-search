@@ -45,6 +45,7 @@ def get_memory_usage():
 class Parser:
     def __init__(self, researcher):
         self.researcher = researcher
+        # TODO: uncomment when debugging is complete
         self.search_queries = self.get_search_queries(
             self.researcher.query_sentences, 
             self.researcher.gpt_sentences
@@ -103,8 +104,7 @@ class Parser:
         
         return token_idx_to_word
 
-
-    def word_clusters_from_sentence_pair(self, sentence_a, sentence_b, tokenizer, model):
+    def word_clusters_from_sentence_pair(self, sentence_a, sentence_b, tokenizer, model, attention_threshold=0.25):
         inputs = tokenizer.encode_plus(sentence_a, sentence_b, return_tensors='pt')
 
         # Get token ids for decoding back to words later
@@ -122,31 +122,32 @@ class Parser:
         ignore = string.punctuation + '[CLS][SEP]' + '0123456789'
         kept_tokens = np.array([bool(tokenizer.decode([token_ids[idx]]) not in ignore) for idx in range(attention_matrix.shape[0])])
 
-        clusters = {}
-        for (i, token) in enumerate(attention_matrix[0]):
-            attention_i_to_j = attention_matrix[i,:]
-            mean = attention_i_to_j.mean(where=kept_tokens)
-            std = attention_i_to_j.std(where=kept_tokens)
-            
-            most_attention = {
-                token_idx_to_word[j][0] 
+        attention_to_j = attention_matrix.sum(axis=0, keepdims=False)
+        mean = attention_to_j.mean(where=kept_tokens)
+        std = attention_to_j.std(where=kept_tokens)
+        attenders = {
+                j 
                 for j in range(attention_matrix.shape[1]) 
-                if attention_i_to_j[j] > mean+std 
+                if attention_to_j[j] > mean+std 
                 and kept_tokens[j] 
-                and token_idx_to_word[j][0] not in stop_words}
-            attender = token_idx_to_word[i][0]
+                and token_idx_to_word[j][0] not in stop_words} 
 
-            if attender not in clusters:
-                clusters[attender] = most_attention
-            else:
-                clusters[attender].union(most_attention)
+        mean = attention_matrix.mean(axis=1, keepdims=False, where=kept_tokens)
+        std = attention_matrix.std(axis=1, keepdims=False, where=kept_tokens)
+        # print("mean", mean)
+        # print("std", std)
+        attended = dict()
+        for i in range(attention_matrix.shape[0]):
+            attended[i] = {
+                token_idx_to_word[j][0]
+                for j in range(attention_matrix.shape[1])
+                if attention_matrix[i, j] > mean[i]+std[i]*attention_threshold
+                and kept_tokens[j]
+                and token_idx_to_word[j][0] not in stop_words
+            }
 
-        kept_keys = clusters['[CLS]'].union(clusters['[SEP]']).union({'[CLS]', '[SEP]'})
-        filtered_clusters = {}
-        for k in kept_keys:
-            filtered_clusters[k] = clusters[k]
+        return {token_idx_to_word[k][0]: attended[k] for k in attenders}
 
-        return filtered_clusters
 
     def get_search_queries(self, query_sentences, gpt_sentences):
         # Load pre-trained model and tokenizer
@@ -226,13 +227,13 @@ class Researcher(object):
         # nlp = kwargs.get("nlp", spacy.load("en_core_web_sm"))
         
         # TODO: uncomment when debugging is complete
-        # self.gpt_response = self.ask_gpt_query(query)
-        # self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response)
-        # self.query_sentences = Page.split_into_sentences(self, query)
+        self.gpt_response = self.ask_gpt_query(query)
+        self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response)
+        self.query_sentences = Page.split_into_sentences(self, query)
 
-        # parser = Parser(self)
-        # self.search_queries = parser.search_queries
-        # logger.info(f"Trying the following search queries: {[q.text for q in self.search_queries]}")
+        parser = Parser(self)
+        self.search_queries = parser.search_queries
+        logger.info(f"Trying the following search queries: {[q.text for q in self.search_queries]}")
 
 
     def ask_gpt_query(self, query):
@@ -413,6 +414,7 @@ class Sentence(Page):
         # self.similarities = {} # populated in get_top_k_similar_sentences
         # self.relation_to_gpt = {} # populated in get_relation_to_gpt
 
+
 if __name__ == "__main__":
 
     query = "What are the deadliest animals in Australia?"
@@ -427,11 +429,11 @@ Australia is also home to a variety of venomous snakes, including the inland tai
 In addition to the above, other notable deadly animals in Australia include the Sydney funnel-web spider (Atrax robustus), known for its highly toxic venom, and the cone snail (Conus species), which are marine mollusks that can deliver venomous stings.
 
 It is crucial to emphasize that while encounters with these deadly animals can and do occur, the likelihood of such encounters is generally quite low. It is important for residents and visitors to Australia to be aware of their surroundings, follow safety protocols, and seek professional assistance in case of any encounters with dangerous wildlife."""
-    researcher = Researcher(query)
-    researcher.gpt_response = researcher.ask_gpt_query(query)
-    researcher.gpt_sentences = Page.split_into_sentences(researcher, researcher.gpt_response)
-    researcher.query_sentences = Page.split_into_sentences(researcher, query)
+    # researcher = Researcher(query)
+    # researcher.gpt_response = researcher.ask_gpt_query(query)
+    # researcher.gpt_sentences = Page.split_into_sentences(researcher, researcher.gpt_response)
+    # researcher.query_sentences = Page.split_into_sentences(researcher, query)
 
-    parser = Parser(researcher)
-    researcher.search_queries = parser.search_queries
-    logger.info(f"Trying the following search queries: {[q.text for q in researcher.search_queries]}")
+    # parser = Parser(researcher)
+    # researcher.search_queries = parser.search_queries
+    # logger.info(f"Trying the following search queries: {[q.text for q in researcher.search_queries]}")
