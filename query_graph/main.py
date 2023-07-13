@@ -1,20 +1,25 @@
 import time
+from tqdm import tqdm
+
 from joblib import Parallel, delayed
 from multiprocessing import Manager
 
 import spacy
 
-from researcher import Researcher
 from sentence_transformers import SentenceTransformer, util
-from tqdm import tqdm
+
 import os
 os.environ['TOKENIZERS_PARALLELISM'] = "true"
 
 import torch
 # device = torch.device("cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
 
-from logger import logger
 
+# from logger import logger
+# from researcher import Researcher
+# use absolute imports for custom modules
+from query_graph.logger import logger
+from query_graph.researcher import Researcher
 
 
 def get_urls(researcher, parallelize_get_urls=True):

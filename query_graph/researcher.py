@@ -1,34 +1,39 @@
-# Researcher.py
+# TODO: remove when ready to deploy
+# import sys
+# sys.path.insert(0, "/Users/patricktimons/Documents/GitHub/query-graph")
+
 import re
+import string
+
 import requests
 from bs4 import BeautifulSoup
 import json
 
-
 import spacy 
 from scipy.spatial.distance import cosine
-
-from gpt import callGPT
-import config
-from logger import logger
-
-import time
-
 
 from sentence_transformers import SentenceTransformer, util
 
 ## Boiler plate
 from transformers import BertTokenizer, BertModel
 
-import string
 import numpy as np
-
 
 import nltk
 from nltk.corpus import stopwords
- 
 # nltk.download('stopwords')
 stop_words = set(stopwords.words('english'))
+
+# custom modules
+# from gpt import callGPT
+# import config
+# from logger import logger
+# using absolute imports for custom modules
+from query_graph.gpt import callGPT
+from query_graph import config
+from query_graph.logger import logger
+
+
 
 import psutil
 def get_memory_usage():
@@ -219,14 +224,15 @@ class Researcher(object):
         self.search_resolution = kwargs.get("search_resolution", 10000) 
 
         # nlp = kwargs.get("nlp", spacy.load("en_core_web_sm"))
+        
+        # TODO: uncomment when debugging is complete
+        # self.gpt_response = self.ask_gpt_query(query)
+        # self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response)
+        # self.query_sentences = Page.split_into_sentences(self, query)
 
-        self.gpt_response = self.ask_gpt_query(query)
-        self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response)
-        self.query_sentences = Page.split_into_sentences(self, query)
-
-        parser = Parser(self)
-        self.search_queries = parser.search_queries
-        logger.info(f"Trying the following search queries: {[q.text for q in self.search_queries]}")
+        # parser = Parser(self)
+        # self.search_queries = parser.search_queries
+        # logger.info(f"Trying the following search queries: {[q.text for q in self.search_queries]}")
 
 
     def ask_gpt_query(self, query):
@@ -408,36 +414,24 @@ class Sentence(Page):
         # self.relation_to_gpt = {} # populated in get_relation_to_gpt
 
 if __name__ == "__main__":
-    # page = Page({"Marajuana"}, "https://en.wikipedia.org/wiki/Taiwan")
-    # for sentence in page.sentences:
-    #     print(sentence)
-    #     print()
-#     gpt_response = """ChatGPT: To determine the deadliest animals in Australia, I would consider various factors such as the number of human fatalities caused by different species, the toxicity or venomous nature of the animals, and the likelihood or frequency of encounters with these dangerous creatures. It is important to note that a species being deadly does not necessarily mean it is aggressive or inclined to attack humans, but rather that it poses a potential threat due to its natural characteristics.
 
-# One of the most feared and deadliest animals in Australia is the saltwater crocodile (Crocodylus porosus). These massive reptiles are known to be highly aggressive and can be found in coastal areas, rivers, and even some open sea areas in the northern parts of Australia. Saltwater crocodiles are responsible for the highest number of reported fatal attacks on humans in the country. They are particularly dangerous as they are excellent swimmers and ambush predators, capable of striking suddenly with their powerful jaws.
+    query = "What are the deadliest animals in Australia?"
+    gpt_response = """ChatGPT: To determine the deadliest animals in Australia, I would consider various factors such as the number of human fatalities caused by different species, the toxicity or venomous nature of the animals, and the likelihood or frequency of encounters with these dangerous creatures. It is important to note that a species being deadly does not necessarily mean it is aggressive or inclined to attack humans, but rather that it poses a potential threat due to its natural characteristics.
 
-# Another dangerous animal in Australia is the box jellyfish (Chironex fleckeri). This marine creature, found in the coastal waters of Northern Australia, possesses extremely potent venom in its tentacles. Box jellyfish stings can cause cardiac arrest and death within minutes, making them one of the deadliest creatures in the ocean. While encounters with box jellyfish are rare and there are protective measures in place at popular swimming locations, their presence highlights the need for caution during marine activities.
+One of the most feared and deadliest animals in Australia is the saltwater crocodile (Crocodylus porosus). These massive reptiles are known to be highly aggressive and can be found in coastal areas, rivers, and even some open sea areas in the northern parts of Australia. Saltwater crocodiles are responsible for the highest number of reported fatal attacks on humans in the country. They are particularly dangerous as they are excellent swimmers and ambush predators, capable of striking suddenly with their powerful jaws.
 
-# Australia is also home to a variety of venomous snakes, including the inland taipan (Oxyuranus microlepidotus) and the eastern brown snake (Pseudonaja textilis). The inland taipan is considered the most venomous snake in the world, with its venom being highly potent and capable of causing rapid paralysis and death. Eastern brown snakes, on the other hand, are responsible for the highest number of snakebite-related deaths in Australia. These snakes are commonly found in populated areas, and their bites can lead to cardiovascular collapse and nervous system failure if not treated promptly.
+Another dangerous animal in Australia is the box jellyfish (Chironex fleckeri). This marine creature, found in the coastal waters of Northern Australia, possesses extremely potent venom in its tentacles. Box jellyfish stings can cause cardiac arrest and death within minutes, making them one of the deadliest creatures in the ocean. While encounters with box jellyfish are rare and there are protective measures in place at popular swimming locations, their presence highlights the need for caution during marine activities.
 
-# In addition to the above, other notable deadly animals in Australia include the Sydney funnel-web spider (Atrax robustus), known for its highly toxic venom, and the cone snail (Conus species), which are marine mollusks that can deliver venomous stings.
+Australia is also home to a variety of venomous snakes, including the inland taipan (Oxyuranus microlepidotus) and the eastern brown snake (Pseudonaja textilis). The inland taipan is considered the most venomous snake in the world, with its venom being highly potent and capable of causing rapid paralysis and death. Eastern brown snakes, on the other hand, are responsible for the highest number of snakebite-related deaths in Australia. These snakes are commonly found in populated areas, and their bites can lead to cardiovascular collapse and nervous system failure if not treated promptly.
 
-# It is crucial to emphasize that while encounters with these deadly animals can and do occur, the likelihood of such encounters is generally quite low. It is important for residents and visitors to Australia to be aware of their surroundings, follow safety protocols, and seek professional assistance in case of any encounters with dangerous wildlife."""
-    # query = "Is it true that the 2020 election was stolen from Trump because of fraudulent voting machines and electronic ballots."
+In addition to the above, other notable deadly animals in Australia include the Sydney funnel-web spider (Atrax robustus), known for its highly toxic venom, and the cone snail (Conus species), which are marine mollusks that can deliver venomous stings.
 
-#     query_sentences = Page.split_into_sentences(None, query)
-#     gpt_sentences = Page.split_into_sentences(None, gpt_response)
-#     print(query_sentences)
-#     print(gpt_sentences)
+It is crucial to emphasize that while encounters with these deadly animals can and do occur, the likelihood of such encounters is generally quite low. It is important for residents and visitors to Australia to be aware of their surroundings, follow safety protocols, and seek professional assistance in case of any encounters with dangerous wildlife."""
+    researcher = Researcher(query)
+    researcher.gpt_response = researcher.ask_gpt_query(query)
+    researcher.gpt_sentences = Page.split_into_sentences(researcher, researcher.gpt_response)
+    researcher.query_sentences = Page.split_into_sentences(researcher, query)
 
-    query = "Who are the most influential people in the space of Artificial Intellegence?"
-    # researcher = Researcher(query)
-    search_query = SearchQuery("Who are the most influential people in the space of Artificial Intellegence?")
-    search = Search(search_query)
-    urls = search.search_google(5)
-    print(urls)
-    # url_dict = {}
-    # for search_query in researcher.search_queries:
-    #     researcher.get_urls(search_query, url_dict)
-    # print(url_dict)
-    
+    parser = Parser(researcher)
+    researcher.search_queries = parser.search_queries
+    logger.info(f"Trying the following search queries: {[q.text for q in researcher.search_queries]}")

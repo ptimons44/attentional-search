@@ -5,8 +5,13 @@ from dash import dcc, html
 import plotly.graph_objects as go
 
 from dash.dependencies import Input, Output
-from main import pipeline, deserialize_object
+
 import pandas as pd
+
+# use absolute imports for custom modules
+# from main import pipeline, deserialize_object
+from query_graph.main import pipeline, deserialize_object
+
 
 def df_from_researcher(researcher):
     # Create an empty list to store dictionaries of node attributes

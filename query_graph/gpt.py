@@ -1,5 +1,6 @@
+from query_graph import config
+
 import openai
-import config
 openai.api_key = config.OPENAI_APIKEY()
 
 import tiktoken
