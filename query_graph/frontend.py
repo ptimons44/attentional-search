@@ -1,3 +1,7 @@
+# TODO: delete when in produciton
+import sys
+sys.path.insert(0, "/Users/patricktimons/Documents/GitHub/query-graph")
+
 import random
 
 import dash

@@ -43,46 +43,18 @@ def get_memory_usage():
 
     
 class Parser:
-    def __init__(self, researcher):
+    def __init__(self, researcher, model, tokenizer):
         self.researcher = researcher
         # TODO: uncomment when debugging is complete
-        self.search_queries = self.get_search_queries(
+        self.search_queries = self.get_k_search_queries(
             self.researcher.query_sentences, 
-            self.researcher.gpt_sentences
+            self.researcher.gpt_sentences,
+            model,
+            tokenizer,
+            self.researcher.num_search_queries,
+            self.researcher.search_query_attention_threshold
         )
 
-    # def levenshtein_distance(self, s1, s2):
-    #     if len(s1) < len(s2):
-    #         return self.levenshtein_distance(s2, s1)
-    #     if len(s2) == 0:
-    #         return len(s1)
-    #     previous_row = range(len(s2) + 1)
-    #     for i, c1 in enumerate(s1):
-    #         current_row = [i + 1]
-    #         for j, c2 in enumerate(s2):
-    #             insertions = previous_row[j + 1] + 1
-    #             deletions = current_row[j] + 1
-    #             substitutions = previous_row[j] + (c1 != c2)
-    #             current_row.append(min(insertions, deletions, substitutions))
-    #         previous_row = current_row
-    #     return previous_row[-1]
-
-    # def get_sentence_index(self, phrase, sentences):
-    #     """_summary_
-
-    #     Args:
-    #         phrase (spacy.span): phrase we want the sentence index of
-    #         sentences (list): list of sentences (spans)
-
-    #     Returns:
-    #         int: index of phrase in sentences
-    #     """
-    #     for ix, sentence in enumerate(sentences):
-    #         if sentence.end >= phrase.end:
-    #             index = ix
-    #             break
-    #     return index
-    
     def get_token_idx_to_word(self, token_ids, tokenizer):
         # dictionary mapping token index to (corresponding word, is_child_root) 
         # parent root is for tracking the chain of updates that we will have to do
@@ -102,73 +74,134 @@ class Parser:
                 decoded_word = decoded_token
             token_idx_to_word[idx] = (decoded_word, is_dependant_morpheme)
         
-        return token_idx_to_word
+        return {k: token_idx_to_word[k][0] for k in token_idx_to_word}
+    
+    def get_k_search_queries(self, query_sentences, gpt_sentences, model, tokenizer, k=25, attention_threshold=0.25):
+        # tokens represented as (query_sentence_idx, gpt_sentence_idx, token_idx)
+        attention_to_token = {} # keys
+        highly_attended_from_token = {} # values / groups
 
-    def word_clusters_from_sentence_pair(self, sentence_a, sentence_b, tokenizer, model, attention_threshold=0.25):
-        inputs = tokenizer.encode_plus(sentence_a, sentence_b, return_tensors='pt')
+        token_to_word = {}
+        ignore_token = {}
 
-        # Get token ids for decoding back to words later
-        token_ids = inputs['input_ids'].numpy().squeeze()
+        for (q_idx, query_sentence) in enumerate(query_sentences):
+            for (gpt_idx, gpt_sentence) in enumerate(gpt_sentences):
+                inputs = tokenizer.encode_plus(query_sentence, gpt_sentence, return_tensors='pt')
 
-        # dictionary mapping token index to (corresponding word, is_child_root) 
-        # parent root is for tracking the chain of updates that we will have to do
-        token_idx_to_word = self.get_token_idx_to_word(token_ids, tokenizer)
+                # Get token ids for decoding back to words later
+                token_ids = inputs['input_ids'].numpy().squeeze()
+                
+                # dictionary mapping token index to (corresponding word, is_child_root) 
+                # parent root is for tracking the chain of updates that we will have to do
+                token_idx_to_word = self.get_token_idx_to_word(token_ids, tokenizer)
+                token_to_word |= {(q_idx, gpt_idx, token_idx): token_idx_to_word[token_idx] for token_idx in token_idx_to_word}
 
-        outputs = model(**inputs)
-        last_layer_attentions = outputs.attentions[-1]  # get the last layer's attentions
-        avg_attention = last_layer_attentions.squeeze(0).mean(dim=0)  # average attention across heads
-        attention_matrix = avg_attention.detach().numpy()
+                outputs = model(**inputs)
+                last_layer_attentions = outputs.attentions[-1]  # get the last layer's attentions
+                avg_attention = last_layer_attentions.squeeze(0).mean(dim=0)  # average attention across heads
+                attention_matrix = avg_attention.detach().numpy()
 
-        ignore = string.punctuation + '[CLS][SEP]' + '0123456789'
-        kept_tokens = np.array([bool(tokenizer.decode([token_ids[idx]]) not in ignore) for idx in range(attention_matrix.shape[0])])
+                ignore = string.punctuation + '[CLS][SEP]' + '0123456789'
+                kept_tokens = np.array([bool(tokenizer.decode([token_ids[idx]]) not in ignore) for idx in range(attention_matrix.shape[0])])
 
-        attention_to_j = attention_matrix.sum(axis=0, keepdims=False)
-        mean = attention_to_j.mean(where=kept_tokens)
-        std = attention_to_j.std(where=kept_tokens)
-        attenders = {
-                j 
-                for j in range(attention_matrix.shape[1]) 
-                if attention_to_j[j] > mean+std 
-                and kept_tokens[j] 
-                and token_idx_to_word[j][0] not in stop_words} 
+                attention_to_j = attention_matrix.sum(axis=0, keepdims=False)
+                for j in range(len(attention_to_j)):
+                    attention_to_token[(q_idx, gpt_idx, j)] = attention_to_j[j]
+                    ignore_token[(q_idx, gpt_idx, j)] = not kept_tokens[j]
 
-        mean = attention_matrix.mean(axis=1, keepdims=False, where=kept_tokens)
-        std = attention_matrix.std(axis=1, keepdims=False, where=kept_tokens)
-        # print("mean", mean)
-        # print("std", std)
-        attended = dict()
-        for i in range(attention_matrix.shape[0]):
-            attended[i] = {
-                token_idx_to_word[j][0]
-                for j in range(attention_matrix.shape[1])
-                if attention_matrix[i, j] > mean[i]+std[i]*attention_threshold
-                and kept_tokens[j]
-                and token_idx_to_word[j][0] not in stop_words
-            }
+                mean = attention_matrix.mean(axis=1, keepdims=False, where=kept_tokens)
+                std = attention_matrix.std(axis=1, keepdims=False, where=kept_tokens)
+                highly_attended_from_token |= {
+                    (q_idx, gpt_idx, i): {
+                        token_to_word[(q_idx, gpt_idx, j)]
+                        for j in range(attention_matrix.shape[1])
+                        if attention_matrix[i, j] > mean[i]+std[i]*attention_threshold
+                        and kept_tokens[j]
+                        and token_idx_to_word[j] not in stop_words
+                    }
+                    for i in range(attention_matrix.shape[0])
+                    if kept_tokens[i]
+                    and token_idx_to_word[i] not in stop_words
 
-        return {token_idx_to_word[k][0]: attended[k] for k in attenders}
+                }
 
-
-    def get_search_queries(self, query_sentences, gpt_sentences):
-        # Load pre-trained model and tokenizer
-        model_name = 'bert-base-uncased'
-        model = BertModel.from_pretrained(model_name, output_attentions=True)
-        tokenizer = BertTokenizer.from_pretrained(model_name)
+        def attention_to_token_key(token):
+            if ignore_token[token]:
+                return 0
+            else:
+                return attention_to_token[token]
         
-        search_queries_text = set()
-        for query_sentence in query_sentences:
-            for gpt_sentence in gpt_sentences:
-                word_clusters = self.word_clusters_from_sentence_pair(query_sentence, gpt_sentence, tokenizer, model)
-                for k in word_clusters:
-                    search_query_text = " AND ".join(word_clusters[k])
-                    search_queries_text.add(search_query_text)
+
+        top_k_attendees = sorted(attention_to_token, key=attention_to_token_key, reverse=True)[:k]
+        
+        return [
+            " AND ".join(word for word in highly_attended_from_token[attender])
+            for attender in top_k_attendees
+        ]
+
+    # def word_clusters_from_sentence_pair(self, sentence_a, sentence_b, tokenizer, model, attention_threshold=0.25):
+    #     inputs = tokenizer.encode_plus(sentence_a, sentence_b, return_tensors='pt')
+
+    #     # Get token ids for decoding back to words later
+    #     token_ids = inputs['input_ids'].numpy().squeeze()
+
+    #     # dictionary mapping token index to (corresponding word, is_child_root) 
+    #     # parent root is for tracking the chain of updates that we will have to do
+    #     token_idx_to_word = self.get_token_idx_to_word(token_ids, tokenizer)
+
+    #     outputs = model(**inputs)
+    #     last_layer_attentions = outputs.attentions[-1]  # get the last layer's attentions
+    #     avg_attention = last_layer_attentions.squeeze(0).mean(dim=0)  # average attention across heads
+    #     attention_matrix = avg_attention.detach().numpy()
+
+    #     ignore = string.punctuation + '[CLS][SEP]' + '0123456789'
+    #     kept_tokens = np.array([bool(tokenizer.decode([token_ids[idx]]) not in ignore) for idx in range(attention_matrix.shape[0])])
+
+    #     attention_to_j = attention_matrix.sum(axis=0, keepdims=False)
+    #     mean = attention_to_j.mean(where=kept_tokens)
+    #     std = attention_to_j.std(where=kept_tokens)
+    #     attenders = {
+    #             j 
+    #             for j in range(attention_matrix.shape[1]) 
+    #             if attention_to_j[j] > mean+std 
+    #             and kept_tokens[j] 
+    #             and token_idx_to_word[j][0] not in stop_words} 
+
+    #     mean = attention_matrix.mean(axis=1, keepdims=False, where=kept_tokens)
+    #     std = attention_matrix.std(axis=1, keepdims=False, where=kept_tokens)
+    #     attended = dict()
+    #     for i in range(attention_matrix.shape[0]):
+    #         attended[i] = {
+    #             token_idx_to_word[j][0]
+    #             for j in range(attention_matrix.shape[1])
+    #             if attention_matrix[i, j] > mean[i]+std[i]*attention_threshold
+    #             and kept_tokens[j]
+    #             and token_idx_to_word[j][0] not in stop_words
+    #         }
+
+    #     return {token_idx_to_word[k][0]: attended[k] for k in attenders}
 
 
-        search_queries = set()
-        for search_query_text in search_queries_text:
-            search_queries.add(SearchQuery(search_query_text))
-        return search_queries
+    # def get_search_queries(self, query_sentences, gpt_sentences):
+    #     # Load pre-trained model and tokenizer
+    #     model_name = 'bert-base-uncased'
+    #     model = BertModel.from_pretrained(model_name, output_attentions=True)
+    #     tokenizer = BertTokenizer.from_pretrained(model_name)
+        
+    #     search_queries_text = set()
+    #     for query_sentence in query_sentences:
+    #         for gpt_sentence in gpt_sentences:
+    #             word_clusters = self.word_clusters_from_sentence_pair(query_sentence, gpt_sentence, tokenizer, model)
+    #             for k in word_clusters:
+    #                 search_query_text = " AND ".join(word_clusters[k])
+    #                 search_queries_text.add(search_query_text)
 
+
+    #     search_queries = set()
+    #     for search_query_text in search_queries_text:
+    #         search_queries.add(SearchQuery(search_query_text))
+    #     return search_queries
+            
 
 class SearchQuery:
     def __init__(self, text):
@@ -223,6 +256,8 @@ class Researcher(object):
         self.num_nodes = kwargs.get("num_nodes", 100)
         self.context_window = kwargs.get("context_window", 2)
         self.search_resolution = kwargs.get("search_resolution", 10000) 
+        self.num_search_queries = kwargs.get("num_search_queries", 25) 
+        self.search_query_attention_threshold = kwargs.get("search_query_attention_threshold", 0.3) 
 
         # nlp = kwargs.get("nlp", spacy.load("en_core_web_sm"))
         
