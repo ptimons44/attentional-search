@@ -1,3 +1,7 @@
+# TODO: delete when in produciton
+import sys
+sys.path.insert(0, "/Users/patricktimons/Documents/GitHub/query-graph")
+
 import time
 from tqdm import tqdm
 
@@ -22,25 +26,49 @@ from query_graph.logger import logger
 from query_graph.researcher import Researcher
 
 
+# def get_urls(researcher, parallelize_get_urls=True):
+#     ### parallelized url retrevial
+#     logger.debug("starting URL retrevial")
+#     manager = Manager()
+#     url_dict = manager.dict()
+
+#     # Run the parallel jobs, passing the shared dictionary as an argument
+#     start_time = time.perf_counter()
+#     if parallelize_get_urls:
+#         Parallel(n_jobs=-1, backend="loky")(delayed(researcher.get_k_urls)(search_query, url_dict, researcher.results_per_search) for search_query in researcher.search_queries)
+#     else:
+#         for search_query in researcher.search_queries:
+#             researcher.get_k_urls(search_query, url_dict, researcher.results_per_search)
+
+#     finish_time = time.perf_counter()
+#     researcher.urls = dict(url_dict)
+#     del url_dict
+
+#     logger.debug(f"Gathered URL's in {finish_time-start_time} seconds")
+
 def get_urls(researcher, parallelize_get_urls=True):
-    ### parallelized url retrevial
-    logger.debug("starting URL retrevial")
-    manager = Manager()
-    url_dict = manager.dict()
+    logger.debug("starting URL retrieval")
+    with Manager() as manager:
+        url_to_queries = manager.dict()
+        query_to_urls = manager.dict()
 
-    # Run the parallel jobs, passing the shared dictionary as an argument
-    start_time = time.perf_counter()
-    # search_queries = researcher.search_queries
-    if parallelize_get_urls:
-        Parallel(n_jobs=-1, backend="loky")(delayed(researcher.get_urls)(search_query, url_dict) for search_query in researcher.search_queries)
-    else:
-        for search_query in researcher.search_queries:
-            researcher.get_urls(search_query, url_dict)
-    finish_time = time.perf_counter()
-    researcher.urls = dict(url_dict)
-    del url_dict
+        start_time = time.perf_counter()
 
-    logger.debug(f"Gathered URL's in {finish_time-start_time} seconds")
+        if parallelize_get_urls:
+            Parallel(n_jobs=-1, backend="threading")(
+                delayed(researcher.get_k_urls)(search_query, researcher.results_per_search, url_to_queries, query_to_urls) 
+                for search_query in researcher.search_queries
+            )
+        else:
+            for search_query in researcher.search_queries:
+                researcher.get_k_urls(search_query, researcher.results_per_search, url_to_queries, query_to_urls)
+
+        finish_time = time.perf_counter()
+
+        researcher.urls = dict(url_to_queries)
+        researcher.query_to_urls = dict(query_to_urls)
+
+        logger.debug(f"Gathered URLs in {finish_time-start_time} seconds")
 
 def get_relevance(sentence):
     return -sentence.relevance
@@ -170,7 +198,7 @@ if __name__ == "__main__":
     except:
         num_nodes = 25
     print("Asking ChatGPT for response...")
-    researcher = pipeline(query, num_nodes=num_nodes, parallelize_create_pages=True, parallelize_get_urls=True)
+    researcher = pipeline(query, num_nodes=num_nodes, parallelize_create_pages=True, parallelize_get_urls=False)
     # serialize_object(researcher, "researcher.pkl")
     # researcher = deserialize_object("researcher.pkl")
     # raise AssertionError

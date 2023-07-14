@@ -9,6 +9,13 @@ import requests
 from bs4 import BeautifulSoup
 import json
 
+# google api
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from threading import Lock
+import json
+lock = Lock()
+
 import spacy 
 from scipy.spatial.distance import cosine
 
@@ -22,24 +29,13 @@ import numpy as np
 import nltk
 from nltk.corpus import stopwords
 # nltk.download('stopwords')
-stop_words = set(stopwords.words('english'))
 
-# custom modules
-# from gpt import callGPT
-# import config
-# from logger import logger
 # using absolute imports for custom modules
 from query_graph.gpt import callGPT
 from query_graph import config
 from query_graph.logger import logger
 
 
-
-import psutil
-def get_memory_usage():
-    memory = psutil.virtual_memory()
-    percent_used = memory.percent
-    return percent_used
 
     
 class Parser:
@@ -76,13 +72,17 @@ class Parser:
         
         return {k: token_idx_to_word[k][0] for k in token_idx_to_word}
     
-    def get_k_search_queries(self, query_sentences, gpt_sentences, model, tokenizer, k=25, attention_threshold=0.25):
+    def get_k_search_queries(self, query_sentences, gpt_sentences, model, tokenizer, k, attention_threshold):
+        
         # tokens represented as (query_sentence_idx, gpt_sentence_idx, token_idx)
         attention_to_token = {} # keys
         highly_attended_from_token = {} # values / groups
 
         token_to_word = {}
         ignore_token = {}
+
+        # ignore stop words, punctuation, special tokens, and lone numerals
+        ignore = set(stopwords.words('english')) | set(string.punctuation) | {'[CLS]', '[SEP]'} | set("0123456789") 
 
         for (q_idx, query_sentence) in enumerate(query_sentences):
             for (gpt_idx, gpt_sentence) in enumerate(gpt_sentences):
@@ -101,28 +101,25 @@ class Parser:
                 avg_attention = last_layer_attentions.squeeze(0).mean(dim=0)  # average attention across heads
                 attention_matrix = avg_attention.detach().numpy()
 
-                ignore = string.punctuation + '[CLS][SEP]' + '0123456789'
-                kept_tokens = np.array([bool(tokenizer.decode([token_ids[idx]]) not in ignore) for idx in range(attention_matrix.shape[0])])
+                keep_token = np.array([bool(tokenizer.decode([token_ids[idx]]) not in ignore) for idx in range(attention_matrix.shape[0])])
 
                 attention_to_j = attention_matrix.sum(axis=0, keepdims=False)
                 for j in range(len(attention_to_j)):
-                    attention_to_token[(q_idx, gpt_idx, j)] = attention_to_j[j]
-                    ignore_token[(q_idx, gpt_idx, j)] = not kept_tokens[j]
-
-                mean = attention_matrix.mean(axis=1, keepdims=False, where=kept_tokens)
-                std = attention_matrix.std(axis=1, keepdims=False, where=kept_tokens)
+                    if keep_token[j]:
+                        attention_to_token[(q_idx, gpt_idx, j)] = attention_to_j[j]
+                    ignore_token[(q_idx, gpt_idx, j)] = not keep_token[j]
+                
+                mean = attention_matrix.mean(axis=1, keepdims=False, where=keep_token)
+                std = attention_matrix.std(axis=1, keepdims=False, where=keep_token)
                 highly_attended_from_token |= {
                     (q_idx, gpt_idx, i): {
                         token_to_word[(q_idx, gpt_idx, j)]
                         for j in range(attention_matrix.shape[1])
                         if attention_matrix[i, j] > mean[i]+std[i]*attention_threshold
-                        and kept_tokens[j]
-                        and token_idx_to_word[j] not in stop_words
+                        and keep_token[j]
                     }
                     for i in range(attention_matrix.shape[0])
-                    if kept_tokens[i]
-                    and token_idx_to_word[i] not in stop_words
-
+                    if keep_token[i]
                 }
 
         def attention_to_token_key(token):
@@ -130,121 +127,12 @@ class Parser:
                 return 0
             else:
                 return attention_to_token[token]
-        
-
         top_k_attendees = sorted(attention_to_token, key=attention_to_token_key, reverse=True)[:k]
         
         return [
             " AND ".join(word for word in highly_attended_from_token[attender])
             for attender in top_k_attendees
         ]
-
-    # def word_clusters_from_sentence_pair(self, sentence_a, sentence_b, tokenizer, model, attention_threshold=0.25):
-    #     inputs = tokenizer.encode_plus(sentence_a, sentence_b, return_tensors='pt')
-
-    #     # Get token ids for decoding back to words later
-    #     token_ids = inputs['input_ids'].numpy().squeeze()
-
-    #     # dictionary mapping token index to (corresponding word, is_child_root) 
-    #     # parent root is for tracking the chain of updates that we will have to do
-    #     token_idx_to_word = self.get_token_idx_to_word(token_ids, tokenizer)
-
-    #     outputs = model(**inputs)
-    #     last_layer_attentions = outputs.attentions[-1]  # get the last layer's attentions
-    #     avg_attention = last_layer_attentions.squeeze(0).mean(dim=0)  # average attention across heads
-    #     attention_matrix = avg_attention.detach().numpy()
-
-    #     ignore = string.punctuation + '[CLS][SEP]' + '0123456789'
-    #     kept_tokens = np.array([bool(tokenizer.decode([token_ids[idx]]) not in ignore) for idx in range(attention_matrix.shape[0])])
-
-    #     attention_to_j = attention_matrix.sum(axis=0, keepdims=False)
-    #     mean = attention_to_j.mean(where=kept_tokens)
-    #     std = attention_to_j.std(where=kept_tokens)
-    #     attenders = {
-    #             j 
-    #             for j in range(attention_matrix.shape[1]) 
-    #             if attention_to_j[j] > mean+std 
-    #             and kept_tokens[j] 
-    #             and token_idx_to_word[j][0] not in stop_words} 
-
-    #     mean = attention_matrix.mean(axis=1, keepdims=False, where=kept_tokens)
-    #     std = attention_matrix.std(axis=1, keepdims=False, where=kept_tokens)
-    #     attended = dict()
-    #     for i in range(attention_matrix.shape[0]):
-    #         attended[i] = {
-    #             token_idx_to_word[j][0]
-    #             for j in range(attention_matrix.shape[1])
-    #             if attention_matrix[i, j] > mean[i]+std[i]*attention_threshold
-    #             and kept_tokens[j]
-    #             and token_idx_to_word[j][0] not in stop_words
-    #         }
-
-    #     return {token_idx_to_word[k][0]: attended[k] for k in attenders}
-
-
-    # def get_search_queries(self, query_sentences, gpt_sentences):
-    #     # Load pre-trained model and tokenizer
-    #     model_name = 'bert-base-uncased'
-    #     model = BertModel.from_pretrained(model_name, output_attentions=True)
-    #     tokenizer = BertTokenizer.from_pretrained(model_name)
-        
-    #     search_queries_text = set()
-    #     for query_sentence in query_sentences:
-    #         for gpt_sentence in gpt_sentences:
-    #             word_clusters = self.word_clusters_from_sentence_pair(query_sentence, gpt_sentence, tokenizer, model)
-    #             for k in word_clusters:
-    #                 search_query_text = " AND ".join(word_clusters[k])
-    #                 search_queries_text.add(search_query_text)
-
-
-    #     search_queries = set()
-    #     for search_query_text in search_queries_text:
-    #         search_queries.add(SearchQuery(search_query_text))
-    #     return search_queries
-            
-
-class SearchQuery:
-    def __init__(self, text):
-        self.text = text
-
-class Search:
-    def __init__(self, search_query):
-        self.search_query = search_query  
-
-    def search_google(self, results_per_search):
-        """
-        before is string in YYYY-MM-DD format
-        """
-        output = []
-        while results_per_search > 0:
-            if results_per_search < 10:
-                page=1
-                num=results_per_search
-            else:
-                num=10
-                page=1
-            params = {
-                "key": config.GGLSEARCH_APIKEY(),
-                "cx": config.GGL_SE(),
-                "q": self.search_query.text,
-                "h1": "en",
-                "lr": "lang_en",
-                "page": page,
-                "num": num,
-                # "condition": AUTO # need to fix this
-            }
-
-            response = requests.get(config.GGLSEARCH_URL(), params=params)
-            assert (int(response.status_code) > 199 and int(response.status_code) < 300), "Google API Non-Responsive. Check search quotas. Error: " + str(response.status_code)
-            response = json.loads(response.content)
-            response["error"] = 0
-            for item in response["items"]:
-                output.append(item)
-            results_per_search -= num
-            page += 1
-        return list(item["link"] for item in output)
-
-
 
 
 class Researcher(object):
@@ -257,18 +145,32 @@ class Researcher(object):
         self.context_window = kwargs.get("context_window", 2)
         self.search_resolution = kwargs.get("search_resolution", 10000) 
         self.num_search_queries = kwargs.get("num_search_queries", 25) 
-        self.search_query_attention_threshold = kwargs.get("search_query_attention_threshold", 0.3) 
+        self.search_query_attention_threshold = kwargs.get("search_query_attention_threshold", 0) 
 
-        # nlp = kwargs.get("nlp", spacy.load("en_core_web_sm"))
+        model_name = 'bert-base-uncased'
+        model = kwargs.get("bert_model", BertModel.from_pretrained(model_name, output_attentions=True))
+        tokenizer = kwargs.get("bert_tokenizer", BertTokenizer.from_pretrained(model_name))
         
-        # TODO: uncomment when debugging is complete
-        self.gpt_response = self.ask_gpt_query(query)
+        # TODO uncomment
+        self.gpt_response = """ChatGPT: To determine the deadliest animals in Australia, I would consider various factors such as the number of human fatalities caused by different species, the toxicity or venomous nature of the animals, and the likelihood or frequency of encounters with these dangerous creatures. It is important to note that a species being deadly does not necessarily mean it is aggressive or inclined to attack humans, but rather that it poses a potential threat due to its natural characteristics.
+
+One of the most feared and deadliest animals in Australia is the saltwater crocodile (Crocodylus porosus). These massive reptiles are known to be highly aggressive and can be found in coastal areas, rivers, and even some open sea areas in the northern parts of Australia. Saltwater crocodiles are responsible for the highest number of reported fatal attacks on humans in the country. They are particularly dangerous as they are excellent swimmers and ambush predators, capable of striking suddenly with their powerful jaws.
+
+Another dangerous animal in Australia is the box jellyfish (Chironex fleckeri). This marine creature, found in the coastal waters of Northern Australia, possesses extremely potent venom in its tentacles. Box jellyfish stings can cause cardiac arrest and death within minutes, making them one of the deadliest creatures in the ocean. While encounters with box jellyfish are rare and there are protective measures in place at popular swimming locations, their presence highlights the need for caution during marine activities.
+
+Australia is also home to a variety of venomous snakes, including the inland taipan (Oxyuranus microlepidotus) and the eastern brown snake (Pseudonaja textilis). The inland taipan is considered the most venomous snake in the world, with its venom being highly potent and capable of causing rapid paralysis and death. Eastern brown snakes, on the other hand, are responsible for the highest number of snakebite-related deaths in Australia. These snakes are commonly found in populated areas, and their bites can lead to cardiovascular collapse and nervous system failure if not treated promptly.
+
+In addition to the above, other notable deadly animals in Australia include the Sydney funnel-web spider (Atrax robustus), known for its highly toxic venom, and the cone snail (Conus species), which are marine mollusks that can deliver venomous stings.
+
+It is crucial to emphasize that while encounters with these deadly animals can and do occur, the likelihood of such encounters is generally quite low. It is important for residents and visitors to Australia to be aware of their surroundings, follow safety protocols, and seek professional assistance in case of any encounters with dangerous wildlife."""
+
+        # self.gpt_response = self.ask_gpt_query(query)
         self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response)
         self.query_sentences = Page.split_into_sentences(self, query)
 
-        parser = Parser(self)
+        parser = Parser(self, model, tokenizer)
         self.search_queries = parser.search_queries
-        logger.info(f"Trying the following search queries: {[q.text for q in self.search_queries]}")
+        logger.info(f"Trying the following search queries: {[q for q in self.search_queries]}")
 
 
     def ask_gpt_query(self, query):
@@ -278,19 +180,49 @@ class Researcher(object):
         response = callGPT(prompt)
         return response
     
-    def get_urls(self, search_query, url_dict):
-        """_summary_
+    def get_k_urls(self, search_query, k, url_to_queries, query_to_urls):
+        current_results = 0
+        start_index = 1
+        while current_results < k:
+            try:
+                service = build("customsearch", "v1", developerKey=config.GGLSEARCH_APIKEY())
+                res = service.cse().list(
+                    q=search_query,
+                    cx=config.GGL_SE(),
+                    hl="en",
+                    lr="lang_en",
+                    start=start_index,
+                    num=min(k-current_results, 10), # Requesting the minimum between remaining results and maximum results per page (10)
+                ).execute()
+                if 'items' in res:
+                    for item in res['items']:
+                        url = item['link']
+                        with lock: # Adding thread safety
+                            if (current_results < k) and (url not in url_to_queries):
+                                url_to_queries[url] = {search_query}
+                                current_results += 1
+                            else:
+                                query_set = set(url_to_queries[url])
+                                query_set.add(search_query)
+                                url_to_queries[url] = query_set
 
-        Args:
-            url_dict (shared dictionary): maps url (string) to search queries (set of strings)
-            search_query (_type_): _description_
-        """
-        search = Search(search_query)
-        for url in search.search_google(self.results_per_search):
-            if url not in url_dict:
-                url_dict[url] = {search_query}
-            else:
-                url_dict[url].add(search_query)
+                            if search_query not in query_to_urls:
+                                query_to_urls[search_query] = [url]
+                            else:
+                                # create a regular Python list, update it, and then assign it back to the Manager dictionary
+                                url_list = list(query_to_urls[search_query])
+                                url_list.append(url)
+                                query_to_urls[search_query] = url_list
+
+                start_index += 10 # Update starting index for next results page
+            except HttpError as e:
+                print(f"An error has occurred: {e}")
+                break
+            except Exception as e:
+                print(f"An unexpected error has occurred: {e}")
+                break
+
+    
 
     def create_page(self, search_queries, url, pages_dict):
         page = Page(search_queries, url)
@@ -298,12 +230,6 @@ class Researcher(object):
 
     def create_pages_and_sentences(self, search_queries, url, sentence_list):
         logger.debug(f"creating page and sentences for {url}")
-
-        # Memory usage
-        memory_usage = get_memory_usage()
-        logger.debug(f"RAM memory % used: {memory_usage}")
-        if memory_usage > 75:
-            logger.info(f"Memory Low. Using: {memory_usage}")
 
         # creating page
         page = Page(search_queries, url)
@@ -321,16 +247,6 @@ class Researcher(object):
                 # sentence.embedding = model.encode(sentence.sentence)
                 # sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
                 # sentence_list.append(sentence)
-
-    # def create_sentence(self, search_queries, sentence_text, context, model, sentence_list):
-    #     # print("creating sentence: ", sentence_text)
-    #     sentence = Sentence(
-    #         search_queries,
-    #         sentence_text,
-    #         context
-    #     )
-    #     sentence_list.append(sentence)
-
     
 
 class Page():
@@ -471,4 +387,3 @@ It is crucial to emphasize that while encounters with these deadly animals can a
 
     # parser = Parser(researcher)
     # researcher.search_queries = parser.search_queries
-    # logger.info(f"Trying the following search queries: {[q.text for q in researcher.search_queries]}")
