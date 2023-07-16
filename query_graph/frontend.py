@@ -17,45 +17,14 @@ import pandas as pd
 from query_graph.main import pipeline, deserialize_object
 
 
-def df_from_researcher(researcher):
-    # Create an empty list to store dictionaries of node attributes
-    node_list = []
 
-    # Iterate over each node in the researcher object
-    for node in researcher.nodes:
-        # Extract the attributes from the node
-        text = node.text
-        context = node.context
-        url = node.url
-        search_queries = node.search_queries
-        relevant_sentences = [idx for (idx, val) in enumerate(node.relevant_sentences[0]) if val.item()]
+# def get_researcher_df():
+#     researcher = deserialize_object("researcher.pkl")
+#     df = df_from_researcher(researcher)
+#     gpt_response = researcher.gpt_response
+#     gpt_sentences = researcher.gpt_sentences
 
-        # Create a dictionary of node attributes
-        node_dict = {
-            'text': text,
-            'context': context,
-            'url': url,
-            'search_queries': search_queries,
-            'relevant_sentences': relevant_sentences,'entailment': [random.uniform(0, 1) for i in range(len(relevant_sentences))],
-            'contradiction': [random.uniform(0, 1) for i in range(len(relevant_sentences))],
-            'neutral': [random.uniform(0, 1) for i in range(len(relevant_sentences))],
-            'relevance': random.uniform(0,1)
-        }
-
-        # Append the node dictionary to the list
-        node_list.append(node_dict)
-
-    # Create a DataFrame from the list of node dictionaries
-    df = pd.DataFrame(node_list)
-    return df
-
-def get_researcher_df():
-    researcher = deserialize_object("researcher.pkl")
-    df = df_from_researcher(researcher)
-    gpt_response = researcher.gpt_response
-    gpt_sentences = researcher.gpt_sentences
-
-    return df, gpt_response, gpt_sentences
+#     return df, gpt_response, gpt_sentences
 
 app = dash.Dash(__name__)
 

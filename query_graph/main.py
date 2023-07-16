@@ -18,33 +18,14 @@ os.environ['TOKENIZERS_PARALLELISM'] = "true"
 import torch
 # device = torch.device("cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
 
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import torch.nn.functional as F
+import numpy as np
+import pandas as pd
 
-# from logger import logger
-# from researcher import Researcher
 # use absolute imports for custom modules
 from query_graph.logger import logger
 from query_graph.researcher import Researcher
-
-
-# def get_urls(researcher, parallelize_get_urls=True):
-#     ### parallelized url retrevial
-#     logger.debug("starting URL retrevial")
-#     manager = Manager()
-#     url_dict = manager.dict()
-
-#     # Run the parallel jobs, passing the shared dictionary as an argument
-#     start_time = time.perf_counter()
-#     if parallelize_get_urls:
-#         Parallel(n_jobs=-1, backend="loky")(delayed(researcher.get_k_urls)(search_query, url_dict, researcher.results_per_search) for search_query in researcher.search_queries)
-#     else:
-#         for search_query in researcher.search_queries:
-#             researcher.get_k_urls(search_query, url_dict, researcher.results_per_search)
-
-#     finish_time = time.perf_counter()
-#     researcher.urls = dict(url_dict)
-#     del url_dict
-
-#     logger.debug(f"Gathered URL's in {finish_time-start_time} seconds")
 
 def get_urls(researcher, parallelize_get_urls=True):
     logger.debug("starting URL retrieval")
@@ -73,35 +54,42 @@ def get_urls(researcher, parallelize_get_urls=True):
 def get_relevance(sentence):
     return -sentence.relevance
 
-def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BATCH_SIZE = 512):
-    ### parallelized page creation
-    logger.debug("starting page and sentences creation")
-    manager = Manager()
-    sentences_list = manager.list([])
+def get_sentences_from_queries(researcher, model, BATCH_SIZE=512):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    # Run the parallel jobs, passing the shared dictionary as an argument # search_queries, url, pages_dict
-    start_time = time.perf_counter()
-    if parallelize_create_pages:
-        # create_pages_and_sentences(self, search_queries, url, sentence_list, model)
-        Parallel(n_jobs=4, backend="loky")(delayed(researcher.create_pages_and_sentences)(researcher.urls[url], url, sentences_list) for url in researcher.urls)
-    else:
-        for url in researcher.urls:
-            researcher.create_pages_and_sentences(researcher.urls[url], url, sentences_list)
-    # HUNG
-    finish_time = time.perf_counter()
-    logger.debug(f"Created sentences in {finish_time-start_time} seconds")
+    # Make a list of all your search queries
+    search_queries = list(researcher.query_to_urls.keys())
 
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_url = {executor.submit(researcher.get_content_from_query, search_query): search_query for search_query in search_queries}
+        
+        n_sentences_total = 0
+        for future in as_completed(future_to_url):
+            search_query = future_to_url[future]
+            try:
+                n_sentences_found = future.result()
+                n_sentences_total += n_sentences_found
+            except Exception as exc:
+                print(f'{search_query} generated an exception: {exc}')
+    
+    # url to content in researcher.sentences
+    logger.info(f"Collected {n_sentences_total} sentences")
     logger.debug("batching sentence embeddings")
-    logger.info(f"Collected {len(sentences_list)} sentences")
-    print(f"Batching sentence embeddings for {len(sentences_list)} sentences")
     start = time.perf_counter()
-
-    def sentence_generator(sentences_list, batch_size):
-        for i in range(0, len(sentences_list), batch_size):
-            yield sentences_list[i:i + batch_size]
+    
+    def sentence_generator(cache, batch_size):
+        batch = []
+        for (i, url) in enumerate(cache):
+            batch += cache[url]
+            if len(batch) >= batch_size:
+                yield batch[:batch_size]
+                batch = batch[batch_size:]
+            elif i == len(cache) - 1:
+                # no more urls
+                yield batch
 
     all_embeddings = []
-    for batch_sentences in tqdm(sentence_generator(sentences_list, BATCH_SIZE), desc="batching sentence embeddings"):
+    for batch_sentences in tqdm(sentence_generator(researcher.cache, BATCH_SIZE), desc="batching sentence embeddings"):
         embeddings = model.encode(
             list(sentence.text for sentence in batch_sentences),
             batch_size=len(batch_sentences),
@@ -120,20 +108,106 @@ def get_sentences_and_pages(researcher, model, parallelize_create_pages=True, BA
     finish = time.perf_counter()
     logger.debug(f"finished batching sentence embeddings and relevancies in {finish-start} seconds")
 
-    researcher.nodes = list(sentences_list) # reassign Sentence objects to researcher.nodes
-    for sentence in researcher.nodes:
-        i, j  = sentence.index // BATCH_SIZE, sentence.index % BATCH_SIZE
-        sentence.embedding = all_embeddings[i][j]
-        sentence.relevance = all_relevancies[i][j].item()
-
-
+    # assign the vectorization and relevancy attributes to each sentence
+    # assign sentences to researcher
+    researcher.sentences = []
+    n_sents = 0
+    for url in researcher.cache:
+        for sentence in researcher.cache[url]:
+            i, j  = n_sents // BATCH_SIZE, n_sents % BATCH_SIZE
+            sentence.embedding = all_embeddings[i][j]
+            sentence.relevance = all_relevancies[i][j].item()
+            sentence.url = url
+            researcher.sentences.append(sentence)
+            n_sents += 1
+    researcher.cache = {}
+    
     logger.debug("sorting sentences")
     start_time = time.perf_counter()
-    researcher.nodes.sort(key=get_relevance) # lambda function causes pickling error
-    researcher.nodes = researcher.nodes[:min(researcher.num_nodes, len(researcher.nodes))]
-    # del sentences_list
+    researcher.sentences.sort(key=get_relevance) # lambda function causes pickling error
     finish_time = time.perf_counter()
-    logger.debug(f"sorted nodes by similarity in {finish_time-start_time} seconds")
+    logger.debug(f"sorted sentences by similarity in {finish_time-start_time} seconds")
+
+def get_low_dim_embedding(researcher, model, n_sents=300, batch_size=16):
+    print("reload sucessful")
+    # calculate which gpt sentences are most similar to each sentence
+    researcher.gpt_sentences_embedding = model.encode(researcher.gpt_sentences)
+    for sentence in researcher.sentences[:min(n_sents, len(researcher.sentences))]:
+        sentence.gpt_relevance_by_sentence = util.cos_sim(
+            sentence.embedding,
+            researcher.gpt_sentences_embedding
+        )
+        mean = sentence.gpt_relevance_by_sentence.mean()
+        std = sentence.gpt_relevance_by_sentence.std()
+        sentence.relevant_sentences = [
+            idx 
+            for idx in range(len(researcher.gpt_sentences)) 
+            if sentence.gpt_relevance_by_sentence.squeeze()[idx].item() > mean + std
+            ]
+    
+    # calculate the ['entails', 'contradicts', 'neutral'] score of the top n_sents sentences
+
+    # Initialize the model and tokenizer
+    model_name = 'roberta-large-mnli'
+    model = AutoModelForSequenceClassification.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    # Create all pair combinations
+    sentence_pairs = []
+    for sentence in researcher.sentences[:min(n_sents, len(researcher.sentences))]:
+        sentence.contradiction, sentence.neutrality, sentence.entailment = [], [], []
+        for relevant in sentence.relevant_sentences:
+            sentence_pairs.append((sentence, researcher.gpt_sentences[relevant]))
+
+    # Create batches
+    batches = np.array_split(sentence_pairs, len(sentence_pairs) // batch_size)
+
+    for batch in batches:
+        # Prepare batch data
+        batch_sentences1 = [pair[0].text for pair in batch]
+        batch_sentences2 = [pair[1] for pair in batch]
+
+        # Encode the sentences
+        encoded_input = tokenizer(batch_sentences1, batch_sentences2, padding=True, truncation=True, max_length=128, return_tensors='pt')
+
+        # Get model output
+        output = model(**encoded_input)
+        logits = output.logits
+
+        # Apply softmax function to transform logits into probabilities
+        probabilities = F.softmax(logits, dim=-1).detach().numpy()
+
+        # store results in sentence's entails, contradicts, neutral attributes
+        for pair, probs in zip(batch, probabilities):
+            pair[0].contradiction.append(probs[0])
+            pair[0].neutrality.append(probs[1])
+            pair[0].entailment.append(probs[2])
+
+def researcher_to_df(researcher, n_sents):
+    # Create an empty list to store dictionaries of sentence attributes
+    sentence_list = []
+
+    # Iterate over each sentence in the researcher object
+    for sentence in researcher.sentences[:min(n_sents, len(researcher.sentences))]:
+        # Create a dictionary of s attributes
+        sentence_dict = {
+            'text': sentence.text,
+            'context': sentence.context,
+            'url': sentence.url,
+            'search_queries': researcher.urls[sentence.url],
+            'relevant_sentences': sentence.relevant_sentences,
+            'contradiction': sentence.contradiction,
+            'neutrality': sentence.neutrality,
+            'entailment': sentence.entailment,
+            'relevance': sentence.relevance
+        }
+
+        # Append the sentence dictionary to the list
+        sentence_list.append(sentence_dict)
+
+    # Create a DataFrame from the list of sentence dictionaries
+    df = pd.DataFrame(sentence_list)
+    return df
 
 def pipeline(query, num_nodes=50, parallelize_get_urls=True, parallelize_create_pages=True):
     model = SentenceTransformer('multi-qa-MiniLM-L6-cos-v1', device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
@@ -144,21 +218,11 @@ def pipeline(query, num_nodes=50, parallelize_get_urls=True, parallelize_create_
     print("ChatGPT: " + researcher.gpt_response)
 
     get_urls(researcher, parallelize_get_urls=parallelize_get_urls)
-    get_sentences_and_pages(researcher, model, parallelize_create_pages=parallelize_create_pages)
-    
-    # calculate which gpt sentences are most similar to each node
-    researcher.gpt_sentences_embedding = model.encode(researcher.gpt_sentences)
-    for node in researcher.nodes:
-        node.gpt_relevance_by_sentence = util.cos_sim(
-            node.embedding,
-            researcher.gpt_sentences_embedding
-        )
-        mean = node.gpt_relevance_by_sentence.mean()
-        std = node.gpt_relevance_by_sentence.std()
-        node.relevant_sentences = node.gpt_relevance_by_sentence > mean + std
+    get_sentences_from_queries(researcher, model)
+    get_low_dim_embedding(researcher, model, n_sents=300)
+    researcher_df = researcher_to_df(researcher, n_sents=300)
 
-    # return "\n\n".join([node.text for node in researcher.nodes])
-    return researcher
+    return researcher_df
     
 def ordinal(n):
     if str(n)[-1] == '1':

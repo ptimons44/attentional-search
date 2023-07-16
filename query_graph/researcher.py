@@ -147,24 +147,26 @@ class Researcher(object):
         self.num_search_queries = kwargs.get("num_search_queries", 25) 
         self.search_query_attention_threshold = kwargs.get("search_query_attention_threshold", 0) 
 
+        self.cache = {}
+
         model_name = 'bert-base-uncased'
         model = kwargs.get("bert_model", BertModel.from_pretrained(model_name, output_attentions=True))
         tokenizer = kwargs.get("bert_tokenizer", BertTokenizer.from_pretrained(model_name))
         
         # TODO uncomment
-        self.gpt_response = """ChatGPT: To determine the deadliest animals in Australia, I would consider various factors such as the number of human fatalities caused by different species, the toxicity or venomous nature of the animals, and the likelihood or frequency of encounters with these dangerous creatures. It is important to note that a species being deadly does not necessarily mean it is aggressive or inclined to attack humans, but rather that it poses a potential threat due to its natural characteristics.
+#         self.gpt_response = """ChatGPT: To determine the deadliest animals in Australia, I would consider various factors such as the number of human fatalities caused by different species, the toxicity or venomous nature of the animals, and the likelihood or frequency of encounters with these dangerous creatures. It is important to note that a species being deadly does not necessarily mean it is aggressive or inclined to attack humans, but rather that it poses a potential threat due to its natural characteristics.
 
-One of the most feared and deadliest animals in Australia is the saltwater crocodile (Crocodylus porosus). These massive reptiles are known to be highly aggressive and can be found in coastal areas, rivers, and even some open sea areas in the northern parts of Australia. Saltwater crocodiles are responsible for the highest number of reported fatal attacks on humans in the country. They are particularly dangerous as they are excellent swimmers and ambush predators, capable of striking suddenly with their powerful jaws.
+# One of the most feared and deadliest animals in Australia is the saltwater crocodile (Crocodylus porosus). These massive reptiles are known to be highly aggressive and can be found in coastal areas, rivers, and even some open sea areas in the northern parts of Australia. Saltwater crocodiles are responsible for the highest number of reported fatal attacks on humans in the country. They are particularly dangerous as they are excellent swimmers and ambush predators, capable of striking suddenly with their powerful jaws.
 
-Another dangerous animal in Australia is the box jellyfish (Chironex fleckeri). This marine creature, found in the coastal waters of Northern Australia, possesses extremely potent venom in its tentacles. Box jellyfish stings can cause cardiac arrest and death within minutes, making them one of the deadliest creatures in the ocean. While encounters with box jellyfish are rare and there are protective measures in place at popular swimming locations, their presence highlights the need for caution during marine activities.
+# Another dangerous animal in Australia is the box jellyfish (Chironex fleckeri). This marine creature, found in the coastal waters of Northern Australia, possesses extremely potent venom in its tentacles. Box jellyfish stings can cause cardiac arrest and death within minutes, making them one of the deadliest creatures in the ocean. While encounters with box jellyfish are rare and there are protective measures in place at popular swimming locations, their presence highlights the need for caution during marine activities.
 
-Australia is also home to a variety of venomous snakes, including the inland taipan (Oxyuranus microlepidotus) and the eastern brown snake (Pseudonaja textilis). The inland taipan is considered the most venomous snake in the world, with its venom being highly potent and capable of causing rapid paralysis and death. Eastern brown snakes, on the other hand, are responsible for the highest number of snakebite-related deaths in Australia. These snakes are commonly found in populated areas, and their bites can lead to cardiovascular collapse and nervous system failure if not treated promptly.
+# Australia is also home to a variety of venomous snakes, including the inland taipan (Oxyuranus microlepidotus) and the eastern brown snake (Pseudonaja textilis). The inland taipan is considered the most venomous snake in the world, with its venom being highly potent and capable of causing rapid paralysis and death. Eastern brown snakes, on the other hand, are responsible for the highest number of snakebite-related deaths in Australia. These snakes are commonly found in populated areas, and their bites can lead to cardiovascular collapse and nervous system failure if not treated promptly.
 
-In addition to the above, other notable deadly animals in Australia include the Sydney funnel-web spider (Atrax robustus), known for its highly toxic venom, and the cone snail (Conus species), which are marine mollusks that can deliver venomous stings.
+# In addition to the above, other notable deadly animals in Australia include the Sydney funnel-web spider (Atrax robustus), known for its highly toxic venom, and the cone snail (Conus species), which are marine mollusks that can deliver venomous stings.
 
-It is crucial to emphasize that while encounters with these deadly animals can and do occur, the likelihood of such encounters is generally quite low. It is important for residents and visitors to Australia to be aware of their surroundings, follow safety protocols, and seek professional assistance in case of any encounters with dangerous wildlife."""
+# It is crucial to emphasize that while encounters with these deadly animals can and do occur, the likelihood of such encounters is generally quite low. It is important for residents and visitors to Australia to be aware of their surroundings, follow safety protocols, and seek professional assistance in case of any encounters with dangerous wildlife."""
 
-        # self.gpt_response = self.ask_gpt_query(query)
+        self.gpt_response = self.ask_gpt_query(query)
         self.gpt_sentences = Page.split_into_sentences(self, self.gpt_response)
         self.query_sentences = Page.split_into_sentences(self, query)
 
@@ -222,36 +224,80 @@ It is crucial to emphasize that while encounters with these deadly animals can a
                 print(f"An unexpected error has occurred: {e}")
                 break
 
+
+
+    def get_content_from_query(self, search_query, maximum_content=1000):
+        content_amount = 0
+        for url in self.query_to_urls[search_query]:
+            sentences = []
+            if url not in self.cache:
+                logger.debug(f"creating page and sentences for {url}")
+                page = Page(url)
+                for (position, sentence_text) in enumerate(page.sentences):
+                    sentences.append(
+                        Sentence(
+                            sentence_text,
+                            page.get_sentence_content(position, self.context_window), # context
+                        )
+                    )
+                with lock:
+                    self.cache[url] = sentences[:min(len(sentences), maximum_content-content_amount)]
+                    content_amount += len(sentences)
+
+                
+            if content_amount >= maximum_content:
+                break
+                
+        return content_amount
+
     
 
-    def create_page(self, search_queries, url, pages_dict):
-        page = Page(search_queries, url)
-        pages_dict[url] = page
+    # def create_page(self, search_queries, url, pages_dict):
+    #     page = Page(search_queries, url)
+    #     pages_dict[url] = page
 
-    def create_pages_and_sentences(self, search_queries, url, sentence_list):
-        logger.debug(f"creating page and sentences for {url}")
+    # def get_content_from_query(self, search_query, url_to_content, maximum_content=200):
+    #     content_amount = 0
+    #     for url in self.query_to_urls[search_query]:
+    #         if url not in url_to_content:
+    #             logger.debug(f"creating page and sentences for {url}")
+    #             page = Page(url)
+    #             content_amount += len(page.sentences)
+    #             if content_amount >= maximum_content:
+    #                 break
+    #             sentences = []
+    #             for (position, sentence_text) in enumerate(page.sentences):
+    #                 sentences.append(
+    #                     Sentence(
+    #                         sentence_text,
+    #                         page.get_sentence_content(position, self.context_window), # context
+    #                     )
+    #                 )
+    #             url_to_content[url] = sentences
 
-        # creating page
-        page = Page(search_queries, url)
-        if page.content:
-            for (position, sentence_text) in enumerate(page.sentences):
-                sentence_list.append(
-                    Sentence(
-                        search_queries,
-                        sentence_text,
-                        page.get_sentence_content(position, self.context_window), # context
-                        len(sentence_list), # index
-                        url
-                    )
-                )
+    # def create_pages_and_sentences(self, search_queries, url, sentence_list):
+    #     logger.debug(f"creating page and sentences for {url}")
+
+    #     # creating page
+    #     page = Page(search_queries, url)
+    #     if page.content:
+    #         for (position, sentence_text) in enumerate(page.sentences):
+    #             sentence_list.append(
+    #                 Sentence(
+    #                     search_queries,
+    #                     sentence_text,
+    #                     page.get_sentence_content(position, self.context_window), # context
+    #                     len(sentence_list), # index
+    #                     url
+    #                 )
+    #             )
                 # sentence.embedding = model.encode(sentence.sentence)
                 # sentence.relevance = sentence.embedding.dot(self.gpt_response_embedding)
                 # sentence_list.append(sentence)
     
 
 class Page():
-    def __init__(self, search_queries, url): #content, url, ranking):
-        self.search_queries = search_queries # the search query(ies) that returned this page
+    def __init__(self, url): #content, url, ranking):
         self.url = url
 
         self.content = self.get_webpage_content()
@@ -261,7 +307,7 @@ class Page():
             if len(self.sentences) > 500:
                 logger.debug(f"{url} has more than 800 sentences. Truncating to 800 sentences")
         else:
-            self.sentneces = []
+            self.sentences = []
         
 
     def get_webpage_content(self):
@@ -355,12 +401,17 @@ class Page():
         return pre_context + " " + text + " " + post_context
     
 class Sentence(Page):
-    def __init__(self, search_queries, sentence, context, index, url):
-        self.search_queries = search_queries
+    def __init__(self, sentence, context):
         self.text = sentence
         self.context = context
-        self.index = index
-        self.url = url
+
+# class Sentence(Page):
+#     def __init__(self, search_queries, sentence, context, index, url):
+#         self.search_queries = search_queries
+#         self.text = sentence
+#         self.context = context
+#         self.index = index
+#         self.url = url
 
         # self.similarities = {} # populated in get_top_k_similar_sentences
         # self.relation_to_gpt = {} # populated in get_relation_to_gpt
