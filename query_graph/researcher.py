@@ -129,10 +129,14 @@ class Parser:
                 return attention_to_token[token]
         top_k_attendees = sorted(attention_to_token, key=attention_to_token_key, reverse=True)[:k]
         
-        return [
-            " AND ".join(word for word in highly_attended_from_token[attender])
-            for attender in top_k_attendees
-        ]
+
+        search_queries = set()
+        for attender in top_k_attendees:
+            query = " AND ".join(word for word in highly_attended_from_token[attender])
+            if len(search_queries) >= k:
+                break
+            search_queries.add(query)
+        return search_queries
 
 
 class Researcher(object):
@@ -227,6 +231,7 @@ class Researcher(object):
 
 
     def get_content_from_query(self, search_query, maximum_content=1000):
+        logger.info(f"scraping web with search query \"{search_query}\"")
         content_amount = 0
         for url in self.query_to_urls[search_query]:
             sentences = []
@@ -247,7 +252,7 @@ class Researcher(object):
                 
             if content_amount >= maximum_content:
                 break
-                
+        logger.info(f"search query \"{search_query}\" scraped {min(content_amount, maximum_content)} sentences")
         return content_amount
 
     
@@ -297,6 +302,8 @@ class Researcher(object):
     
 
 class Page():
+    timeout = 5
+
     def __init__(self, url): #content, url, ranking):
         self.url = url
 
@@ -314,7 +321,7 @@ class Page():
         logger.debug(f"getting content from {self.url}")
         try:
             # Send a GET request to the specified URL
-            response = requests.get(self.url)
+            response = requests.get(self.url, timeout=self.timeout)
             logger.debug(f"retrieving content from {self.url}")
 
             # Check if the request was successful (status code 200)
@@ -340,7 +347,6 @@ class Page():
         
         logger.debug(f"unable to retrieve content from {self.url}")
         return None
-
 
     def split_into_sentences(self, text: str) -> list[str]:
         """
@@ -387,9 +393,10 @@ class Page():
         text = text.replace("!","!<stop>")
         text = text.replace("<prd>",".")
         sentences = text.split("<stop>")
-        sentences = [s.strip() for s in sentences]
+        sentences = [re.sub(r'[^\w\s]', '', s.strip()) for s in sentences]
         if sentences and not sentences[-1]: sentences = sentences[:-1]
         return sentences
+
     
     def get_sentence_content(self, position, context_window):
         text = self.sentences[position]

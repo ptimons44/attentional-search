@@ -106,7 +106,7 @@ def get_sentences_from_queries(researcher, model, BATCH_SIZE=512):
         )
         all_relevancies.append(relevancies)
     finish = time.perf_counter()
-    logger.debug(f"finished batching sentence embeddings and relevancies in {finish-start} seconds")
+    logger.info(f"finished batching sentence embeddings and relevancies in {finish-start} seconds")
 
     # assign the vectorization and relevancy attributes to each sentence
     # assign sentences to researcher
@@ -209,18 +209,44 @@ def researcher_to_df(researcher, n_sents):
     df = pd.DataFrame(sentence_list)
     return df
 
-def pipeline(query, num_nodes=50, parallelize_get_urls=True, parallelize_create_pages=True):
+def researcher_to_dict(researcher, n_sents):
+    # Create an empty list to store dictionaries of sentence attributes
+    sentences_dict = {}
+
+    # Iterate over each sentence in the researcher object
+    for (i, sentence) in enumerate(researcher.sentences[:min(n_sents, len(researcher.sentences))]):
+        # Create a dictionary of s attributes
+        sentence_dict = {
+            'text': sentence.text,
+            'context': sentence.context,
+            'url': sentence.url,
+            'search_queries': list(researcher.urls[sentence.url]),
+            'relevant_sentences': sentence.relevant_sentences,
+            'contradiction': sentence.contradiction,
+            'neutrality': sentence.neutrality,
+            'entailment': sentence.entailment,
+            'relevance': sentence.relevance
+        }
+
+        # Append the sentence dictionary to the list
+        sentences_dict[i] = sentence_dict
+
+    # Create a DataFrame from the list of sentence dictionaries
+    return sentences_dict
+
+def get_llm_response(query, n_sents=300):
+    researcher = Researcher(query, num_nodes=n_sents)
+    return researcher
+
+def get_web_content(researcher, n_sents=300, parallelize_get_urls=True, parallelize_create_pages=True):
     model = SentenceTransformer('multi-qa-MiniLM-L6-cos-v1', device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
-    nlp = spacy.load("en_core_web_sm")
-    researcher = Researcher(query, nlp=nlp, num_nodes=num_nodes)
     researcher.gpt_response_embedding = model.encode(researcher.gpt_response)
     researcher.gpt_sentences_embedding = model.encode(researcher.gpt_sentences)
-    print("ChatGPT: " + researcher.gpt_response)
 
     get_urls(researcher, parallelize_get_urls=parallelize_get_urls)
     get_sentences_from_queries(researcher, model)
-    get_low_dim_embedding(researcher, model, n_sents=300)
-    researcher_df = researcher_to_df(researcher, n_sents=300)
+    get_low_dim_embedding(researcher, model, n_sents=n_sents)
+    researcher_df = researcher_to_df(researcher, n_sents=n_sents)
 
     return researcher_df
     

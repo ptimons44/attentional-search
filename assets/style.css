@@ -1,8 +1,0 @@
-.clickable-paragraph {
-    cursor: pointer;
-    text-decoration: underline;
-}
-
-.clickable-paragraph:hover {
-    color: blue;
-}

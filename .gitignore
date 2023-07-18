@@ -170,4 +170,7 @@ config.py
 # log file
 query_graph.log
 
+# cache
+cache
+
 
