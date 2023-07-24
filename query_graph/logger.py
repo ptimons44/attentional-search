@@ -1,8 +1,13 @@
 import logging
+from celery.signals import after_setup_logger
 
-def setup_logger(logger_name='query_graph.log'):
-    # Create a logger
-    logger = logging.getLogger(__name__)
+def setup_logger(logger_name='query_graph', log_filename='query_graph.log'):
+    # Create or retrieve the logger
+    logger = logging.getLogger(logger_name)
+
+    # Check if the logger already has handlers attached to it. If it does, we can return early.
+    if logger.hasHandlers():
+        return logger
 
     # Set the log level
     logger.setLevel(logging.DEBUG)
@@ -12,7 +17,7 @@ def setup_logger(logger_name='query_graph.log'):
     console_handler.setLevel(logging.INFO)
 
     # Create a file handler
-    file_handler = logging.FileHandler(logger_name)
+    file_handler = logging.FileHandler(log_filename)
     file_handler.setLevel(logging.DEBUG)
 
     # Create a formatter and add it to the handlers
@@ -26,4 +31,17 @@ def setup_logger(logger_name='query_graph.log'):
 
     return logger
 
-logger = setup_logger()
+@after_setup_logger.connect
+def on_after_setup_logger(logger, **kwargs):
+    custom_logger = setup_logger('celery', 'celery.log')
+    for handler in custom_logger.handlers:
+        logger.addHandler(handler)
+
+# Setting up the celery logger right away
+logger = setup_logger('celery', 'celery.log')
+
+if __name__ == "__main__":
+    logger.debug("Debug message")
+    logger.info("Info message")
+    logger.warning("Warning message")
+    logger.error("Error message")
