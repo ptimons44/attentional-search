@@ -173,4 +173,5 @@ query_graph.log
 # cache
 cache
 
+env/
 

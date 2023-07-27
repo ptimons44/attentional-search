@@ -1,5 +1,7 @@
 from query_graph import config
 
+import numpy as np
+
 import openai
 openai.api_key = config.OPENAI_APIKEY()
 
@@ -21,7 +23,15 @@ def callGPT(prompt, max_tokens=0):
     # if gpt 4
     else:
        pass
+
+def embed_sentences(sentences):
+   response = openai.Embedding.create(
+      input=sentences,
+      model="text-embedding-ada-002"
+   )
+   embeddings = list(np.array(response['data'][i]["embedding"]) for i in range(len(sentences)))
+   return embeddings
     
 if __name__ == "__main__":
-   rspns = callGPT("What day is it today?")
+   rspns = embed_sentences(["What day is it today?", "I hate weather forecasts"])
    print(rspns)
