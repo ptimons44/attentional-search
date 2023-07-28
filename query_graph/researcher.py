@@ -11,20 +11,14 @@ import json
 # google api
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from threading import Lock
-import json
-lock = Lock()
 
-from scipy.spatial.distance import cosine
-
-from sentence_transformers import SentenceTransformer, util
 
 
 import numpy as np
 
 
 # using absolute imports for custom modules
-from query_graph.gpt import callGPT
+from query_graph.gpt import callGPT, embed_sentences
 from query_graph import config
 from query_graph.logger import logger
 
@@ -45,6 +39,10 @@ class Researcher(object):
         self.search_query_attention_threshold = kwargs.get("search_query_attention_threshold", 0) 
         
         self.gpt_response = kwargs.get("gpt_response", self.ask_gpt_query(query))
+        self.gpt_response_embedding = kwargs.get("gpt_response_embedding", embed_sentences([self.gpt_response]))
+        if isinstance(self.gpt_response_embedding, list):
+            self.gpt_response_embedding = np.array(self.gpt_response_embedding)
+
         self.gpt_sentences = kwargs.get("gpt_sentences", Page.split_into_sentences(self, self.gpt_response))
         self.query_sentences = kwargs.get("query_sentences", Page.split_into_sentences(self, query))
 
@@ -59,14 +57,12 @@ class Researcher(object):
             )
             logger.info(f"Researcher initialized with the following search queries: {self.search_queries}")
 
-        self.url_to_queries = kwargs.get("url_to_queries", {})
-        self.query_to_urls = kwargs.get("query_to_urls", {})
         self.sentences = [Sentence.from_dict(s) for s in kwargs.get("sentences", [])]
         
         
 
     def to_dict(self):
-        researcher_dict = {
+        return {
             "query": self.query,
             "threshold": self.threshold,
             "similarity_threshold": self.similarity_threshold,
@@ -80,12 +76,9 @@ class Researcher(object):
             "gpt_sentences": self.gpt_sentences,
             "query_sentences": self.query_sentences,
             "search_queries": self.search_queries,
-            "url_to_queries": self.url_to_queries,
-            "query_to_urls": self.query_to_urls,
+            "gpt_response_embedding": self.gpt_response_embedding.tolist(),
+            "sentences": [sentence.to_dict() for sentence in self.sentences]
         }
-        if hasattr(self, "sentences"):
-            researcher_dict["sentences"] = [sentence.to_dict(self) for sentence in self.sentences]
-        return researcher_dict
     
     @classmethod
     def from_dict(cls, d):
@@ -196,7 +189,7 @@ class Researcher(object):
         return fetched_urls
 
     
-    def get_content_from_urls(self, urls, maximum_content=1000):
+    def get_content_from_urls(self, urls, search_query, maximum_content=1000):
         sentences = []
         for url in urls:
             page = Page(url, self.context_window)
@@ -206,70 +199,10 @@ class Researcher(object):
                 sentences.append(Sentence(
                     sentence,
                     page.sentence_to_context[sentence], # context
-                    url
+                    url,
+                    search_query
                 ))
         return sentences
-
-    def embed_sentences(self, sentences):
-        response = openai.Embedding.create(
-            input=sentences,
-            model="text-embedding-ada-002"
-        )
-        embeddings = response['data'][0]['embedding']
-
-
-    def get_top_n_sents(self):
-        model = SentenceTransformer('multi-qa-MiniLM-L6-cos-v1', device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu")
-        with torch.no_grad():
-            researcher.gpt_response_embedding = model.encode(researcher.gpt_response)
-            researcher.gpt_sentences_embedding = model.encode(researcher.gpt_sentences)
-
-        # url to content in researcher.sentences
-        logger.info(f"Collected {n_sentences_total} sentences")
-        logger.debug("batching sentence embeddings")
-        start = time.perf_counter()
-
-        def sentence_generator(sentences, batch_size):
-            batch = []
-            for i in range(0, len(sentences), batch_size):
-                if i + batch_size < len(sentences):
-                    yield sentences[i:i+batch_size]
-                else:
-                    yield sentences[i:]
-    
-
-        with torch.no_grad():
-            all_embeddings = []
-            for batch_sentences in tqdm(sentence_generator(researcher.sentences, BATCH_SIZE), desc="batching sentence embeddings"):
-                embeddings = model.encode(
-                    list(sentence.text for sentence in batch_sentences),
-                    batch_size=len(batch_sentences),
-                    show_progress_bar=False,
-                    device="cuda" if torch.cuda.is_available() else "mps" if  torch.backends.mps.is_available() else "cpu"
-                )
-                all_embeddings.append(embeddings)
-
-            all_relevancies = []
-            for i in tqdm(range(0, len(all_embeddings)), desc="batching sentence relevancy"):
-                relevancies = util.cos_sim(
-                    all_embeddings[i],
-                    researcher.gpt_response_embedding
-                )
-                all_relevancies.append(relevancies)
-            finish = time.perf_counter()
-            logger.info(f"finished batching sentence embeddings and relevancies in {finish-start} seconds")
-        
-
-        # assign the vectorization and relevancy attributes to each sentence
-        for sentence in researcher.sentences:
-            i, j  = n_sents // BATCH_SIZE, n_sents % BATCH_SIZE
-            sentence.embedding = all_embeddings[i][j]
-            sentence.relevance = all_relevancies[i][j].item()
-            n_sents += 1
-
-        researcher.sentences = sorted(researcher.sentences, key=lambda s: -s.relevance)[:min(n_sents, len(researcher.sentences))]
-        return researcher.sentences
-    
 
 
 class Page():
@@ -342,7 +275,7 @@ class Page():
         chunks = text.split('\n')
         sents = [sentence.strip() for chunk in chunks for sentence in sent_tokenize(chunk)]
         if len(sents) > Page.max_sentences:
-            logger.debug(f"{url} has more than 800 sentences. Truncating to {Page.max_sentences} sentences")
+            logger.debug(f"{self.url} has more than 800 sentences. Truncating to {Page.max_sentences} sentences")
             sents = sents[:Page.max_sentences]
         return sents
 
@@ -357,28 +290,24 @@ class Page():
         return pre_context + " " + text + " " + post_context
     
 class Sentence:
-    def __init__(self, sentence, context, url):
+    def __init__(self, sentence, context, url, search_query):
         self.text = sentence
         self.context = context
         self.url = url
+        self.search_query = search_query
     
-    def to_dict(self, researcher):
+    def to_dict(self):
         sentence_dict = {
             'text': self.text,
             'context': self.context,
             'url': self.url,
-            'search_queries': list(researcher.url_to_queries[self.url]),
+            'search_query': self.search_query,
         }
         if hasattr(self, 'relevance'):
             sentence_dict['relevance'] = self.relevance
 
-        if hasattr(self, 'relevant_sentences'):
-            sentence_dict['relevant_sentences'] = self.relevant_sentences
-
-        if hasattr(self, 'neutrality'):
-            sentence_dict['neutrality'] = self.neutrality
-            sentence_dict["contradiction"] = self.contradiction
-            sentence_dict["entailment"] = self.entailment
+        if hasattr(self, 'embedding'):
+            sentence_dict['embedding'] = self.embedding.tolist()
 
         return sentence_dict
 
