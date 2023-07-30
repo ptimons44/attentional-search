@@ -5,20 +5,22 @@ from celerysetup import celery_app, logger
 
 from sentence_transformers import util
 
+use_cache = False
+
 @celery_app.task
-def init_researcher(query, n_sents=100):
-    researcher = Researcher(query, n_sents=n_sents)
+def init_researcher(query, num_search_queries=10, n_sents=100):
+    researcher = Researcher(query, num_search_queries=num_search_queries, n_sents=n_sents)
     return researcher.to_dict()
 
 import joblib
 @celery_app.task
 def query_to_sentences(researcher_dict, search_query):
     logger.info("query_to_sentences called")
-    try:
+    if use_cache:
         data = joblib.load('cache/all_sentences.joblib')
         logger.info(f"using cache for query: {search_query}")
         return list(sentence for sentence in data if sentence["search_query"] == search_query)
-    except:
+    else:
         logger.info(f"not using cache for query: {search_query}")
 
         researcher = Researcher.from_dict(researcher_dict)
@@ -34,14 +36,14 @@ def query_to_sentences(researcher_dict, search_query):
         for index, sentence in enumerate(sentences):
             sentence.relevance = relevancies[index].item()
             sentence.embedding = embeddings[index]
-        sentences.sort(key=lambda s: s.relevance, reverse=True)
+
         return list(s.to_dict() for s in sentences)
 
 
 from sklearn.manifold import TSNE
 
 # Fit t-SNE to your data
-tsne_model = TSNE(n_components=2, random_state=0)  # Use n_components=3 for 3D
+tsne_model = TSNE(n_components=3, random_state=0)  # Use n_components=3 for 3D
 
 import numpy as np
 

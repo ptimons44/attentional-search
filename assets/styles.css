@@ -1,59 +1,110 @@
-.container {
-    font-family: Arial, sans-serif;
+/* Resetting some default margin and padding values */
+body, div, h1, h5, p {
+    margin: 0;
+    padding: 0;
+    font-family: 'Arial', sans-serif;
 }
 
-.header {
-    background-color: #4591dd;
-    padding: 10px 20px;
+body {
+    background-color: #F6F0ED; /* This gives the whole page an off-white background */
+}
+
+/* Header Styles */
+/* Header Styles */
+.header-container {
+    background-color: #4C3B4D; /* Dark purple color for the header */
     text-align: center;
+    padding: 20px 0;
 }
 
 .header-title {
-    color: #dedede;
+    color: #4C3B4D; /* Off-white color for the title text */
+    margin: 20px 0; /* Adds vertical margin for spacing */
     font-size: 2.5em;
+    text-align: center; /* This will center the title text */
 }
 
+
+#header-image {
+    margin: 0 auto;
+    max-width: 200px;
+    display: block; /* This will help in centering the image */
+}
+
+/* Input and Button Styles */
+/* Center and style the input field */
 .input-field {
-    display: flex;
-    justify-content: center;
-    padding: 20px;
+    text-align: center; /* Center the children: input box and button */
+    margin-top: 40px; /* Add some margin at the top to give it some space from elements above */
+    margin-bottom: 40px; /* Margin below the input field for spacing */
 }
 
 .input {
-    width: 60%;
-    height: 35px;
-    margin-right: 10px;
-    padding: 5px;
-    font-size: 1em;
+    padding: 10px 20px; /* Increased padding for a larger input box */
+    font-size: 1.2em; /* Make the font a bit larger */
+    width: 60%; /* Set width of the input box */
+    border: 2px solid #508991; /* Give it a border color from your palette */
+    border-radius: 5px; /* Slightly rounded edges */
 }
 
 .submit-button {
-    height: 35px;
-    padding: 5px 10px;
-    color: #fff;
-    background-color: #007bff;
-    border-color: #007bff;
-    cursor: pointer;
+    padding: 10px 20px; /* Increase padding to match input box height */
+    font-size: 1.1em; /* Slightly larger font size */
+    background-color: #508991; /* Using one of your palette colors */
+    color: #F6F0ED; /* Off-white text color from your palette */
+    border: none;
+    border-radius: 5px; /* Slightly rounded edges */
+    margin-left: 10px; /* Spacing between the input and the button */
+    cursor: pointer; /* Change the cursor to a pointer on hover */
 }
 
 .submit-button:hover {
-    background-color: #0056b3;
+    background-color: #004346; /* Darker shade from your palette for hover effect */
 }
 
-.gpt-response, .loading-output, .url-dropdown, .detail-panel, .graph, .graph3D {
-    margin: 20px;
+
+/* Content Styles */
+.content-container {
+    margin: 30px 10%; /* Providing some spacing and constraining the width */
 }
 
-.detail-panel {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    width: 300px;
-    background-color: #f5f5f5;
-    border: 1px solid #ddd;
+.n-search-queries-control {
+    padding: 20px;
+    margin: 20px 0;
+    background-color: #F6F0ED;
+    border-radius: 10px;
+}
+
+
+.gpt-response {
+    padding: 20px; /* Padding on all sides */
+    margin-top: 20px;
+    margin-bottom: 20px;
+    background-color: #F6F0ED; /* Light background color from your palette */
+    border-radius: 10px; /* Slightly rounded corners */
+    max-width: 95%; /* Set a maximum width, optionally */
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.graph-detail-wrapper {
+    display: flex;
+    justify-content: space-between;
+}
+
+.main-graph {
+    flex-grow: 2;
+    margin-right: 20px;
+}
+
+.details-panel {
+    flex-basis: 30%; /* Taking roughly 30% of the container's width */
+    padding: 20px;
+    border: 1px solid #4C3B4D; /* Dark purple border */
+    background-color: #F6F0ED;
     border-radius: 8px;
-    padding: 10px;
-    box-shadow: 3px 3px 10px rgba(0, 0, 0, 0.1);
-    display: none;  /* Initially hidden */
-    overflow-y: auto;  /* Add scrollbar if content is more */
+}
+
+.loading-output, .url-dropdown {
+    margin-top: 20px;
 }
