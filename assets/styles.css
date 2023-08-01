@@ -92,6 +92,7 @@ body {
 .graph-detail-wrapper {
     display: flex;
     justify-content: space-between;
+    align-items: flex-start; /* Align the items to start at the same top edge */
 }
 
 .main-graph {
@@ -100,12 +101,29 @@ body {
 }
 
 .details-panel {
-    flex-basis: 30%; /* Taking roughly 30% of the container's width */
+    flex-basis: 30%;
     padding: 20px;
-    border: 1px solid #4C3B4D; /* Dark purple border */
-    background-color: #F6F0ED;
+    border: 1px solid #4C3B4D; 
+    background-color: #F6F0ED; /* You can consider a slightly darker shade if the text isn't very readable */
     border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1); /* Adding a subtle shadow for depth */
 }
+
+.details-panel h5 {
+    font-weight: 600; /* Making the section headers bold */
+    margin-bottom: 8px; /* Add a bit of margin for spacing */
+}
+
+.details-panel p, .details-panel a {
+    margin-bottom: 16px; /* Spacing after each paragraph and link */
+}
+
+.details-panel hr {
+    border: 0;
+    border-top: 1px solid #D0C6C1; /* Lighter shade for separator */
+    margin: 10px 0;
+}
+
 
 .loading-output, .url-dropdown {
     margin-top: 20px;

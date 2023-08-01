@@ -1,25 +1,26 @@
-# use absolute imports for custom modules
 from query_graph.logger import logger
+from query_graph.tasks import init_researcher, query_to_sentences, compress_sentences
 
 from celerysetup import celery_app
 from redislock import RedisLock
 
-import json
-import pickle
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-
 import plotly.graph_objects as go
 import plotly.express as px
 
-from dash import Dash, CeleryManager, Input, Output, State, html, callback, dcc, no_update
-import dash
+from dash import Dash, CeleryManager, Input, Output, State, html, callback, dcc, no_update, callback_context
+import dash_dangerously_set_inner_html
 
-from query_graph.tasks import init_researcher, query_to_sentences, compress_sentences
+import re
 
-#TODO: deugging cache
-use_cache = False
+# Using a color set from Plotly Express
+COLORS = px.colors.qualitative.Set1
+color_map = {}  # Global variable to store color assignments
+
+def get_color_for_query(query):
+    if query not in color_map:
+        color_map[query] = COLORS[len(color_map) % len(COLORS)]
+    return color_map[query]
+
 
 app = Dash(__name__)
 
@@ -83,17 +84,28 @@ data_stores_intervals = [
     dcc.Store(id='researcher-store'),
     dcc.Store(id='researcher-task-store'),
     dcc.Store(id='top-sentences-store', data=[]),
-    dcc.Store(id="url-to-color-store"),
     dcc.Store(id='query-jobs-store'),
     dcc.Store(id='completed-query-jobs-store', data=[]),
     dcc.Store(id='compression-task-store'),
     dcc.Store(id='compressed-sentences-store'),
     dcc.Store(id='previous-compressed-sentences-store', data=None),
+    dcc.Store(id='previous-selected-queries-store'),
     dcc.Interval(
         id='update-interval',
         interval=5*1000,
         n_intervals=0
     ),
+    html.Div(id='graph-width-store'),  # Hidden Div to store the graph width
+    html.Div(dash_dangerously_set_inner_html.DangerouslySetInnerHTML('''
+        <script>
+            // Sample JS code to run on a particular event, like window resize
+            window.addEventListener('resize', function(){
+                var graphWidth = document.getElementById("main-graph").offsetWidth;
+                // Send this width value to the hidden div
+                document.getElementById('graph-width-store').innerText = graphWidth;
+            });
+        </script>
+    '''))
 ]
 
 app.layout = html.Div([
@@ -109,14 +121,18 @@ app.layout = html.Div([
         [
             html.Div(id="gpt-response-section", children="", className='gpt-response'),
             html.Div(graph_details, className='graph-detail-wrapper'),
-            html.Div(id='loading-output-section', className='loading-output'),
-            dcc.Checklist(id='url-dropdown-checklist', className='url-dropdown'),
+            dcc.Checklist(
+                id='query-checklist',
+                options=[],  # start with an empty list
+                value=[],  # and no selected values
+                style={'display': 'none'}
+            )
         ],
         className='content'
     ),
 
     # Stores and Interval
-    *data_stores_intervals
+    *data_stores_intervals,
 
 ])
 
@@ -125,7 +141,7 @@ app.layout = html.Div([
     [Input('n-search-queries-slider', 'value'), Input('n-search-queries-input', 'value')]
 )
 def sync_slider_input(slider_val, input_val):
-    ctx = dash.callback_context
+    ctx = callback_context
 
     # If no components have been triggered, just return the current state
     if not ctx.triggered:
@@ -140,33 +156,31 @@ def sync_slider_input(slider_val, input_val):
         return slider_val, input_val
 
 
-
-import re
 def clean_word(word):
     # Remove punctuation from the word
     cleaned_word = re.sub(r'[^\w\s]', '', word)
     return cleaned_word.lower().strip()
 
-import joblib
 @app.callback(
-    [Output('gpt-response-section', 'children'),
-     Output('researcher-store', 'data'),
-     Output('researcher-task-store', 'data')],
+    [Output('query-checklist', 'options'),
+    Output('query-checklist', 'value'),
+    Output('gpt-response-section', 'children'),
+    Output('researcher-store', 'data'),
+    Output('researcher-task-store', 'data')],
     [Input('submit-query', 'n_clicks')],
     [State('input-query', 'value'), State('n-search-queries-input', 'value')]
 )
 def get_llm_response(n_clicks, input_value, n_search_queries):
     if not n_clicks or not input_value:
-        return "", None, None
+        return no_update, no_update, "", None, None
 
-    if use_cache:
-        researcher_result = joblib.load("cache/researcher.joblib")
-        researcher_task_id = None
-    else:
-        # Pass the num_search_queries parameter to the init_researcher function
-        task = init_researcher.apply_async(args=[input_value, n_search_queries])
-        researcher_task_id = task.id
-        researcher_result = task.get()
+    # Pass the num_search_queries parameter to the init_researcher function
+    task = init_researcher.apply_async(args=[input_value, n_search_queries])
+    researcher_task_id = task.id
+    researcher_result = task.get()
+
+    unique_search_queries = researcher_result["search_queries"]
+    options = [{'label': query, 'value': query} for query in unique_search_queries]
 
     gpt_response_text = researcher_result["gpt_response"]
     attentions = researcher_result["attention_to_word"]
@@ -195,19 +209,20 @@ def get_llm_response(n_clicks, input_value, n_search_queries):
         highlighted_words.append(word_span)
         ptr_all_words += 1
 
-    return highlighted_words, researcher_result, researcher_task_id
+    return options, unique_search_queries, highlighted_words, researcher_result, researcher_task_id
 
 
 
 @app.callback(
     Output('query-jobs-store', 'data'),
-    [Input('researcher-store', 'data')]
+    [Input('researcher-store', 'data'),
+    Input('researcher-task-store', 'data')]
 )
-def trigger_jobs(researcher):
+def trigger_jobs(researcher, researcher_task_id):
     if not researcher:
         return no_update
 
-    task_ids = [query_to_sentences.delay(researcher, search_query).task_id for search_query in researcher["search_queries"]]
+    task_ids = [query_to_sentences.delay(researcher, search_query, researcher_task_id).task_id for search_query in researcher["search_queries"]]
     return task_ids
 
 
@@ -267,10 +282,10 @@ def update_top_sentences(n, task_ids_data, existing_data, completed_tasks_data, 
 )
 def trigger_compression(sentences_data, completed_jobs_data, all_jobs_data):
     if not sentences_data or not completed_jobs_data or not all_jobs_data:
-        return dash.no_update
+        return no_update
     # Check if all the tasks are completed before triggering compression
     if set(completed_jobs_data) != set(all_jobs_data):
-        return dash.no_update
+        return no_update
 
     return compress_sentences.apply_async(args=[sentences_data]).id
 
@@ -297,43 +312,80 @@ def store_previous_compressed_data(compressed_data):
     return compressed_data
 
 @app.callback(
-    Output('main-graph', 'style'),
+    Output('previous-selected-queries-store', 'data'),
+    [Input('query-checklist', 'value')]
+)
+def store_previous_selected_queries(selected_queries):
+    return selected_queries
+
+
+@app.callback(
+    [Output('main-graph', 'style'),
+    Output('query-checklist', 'style')],
     [Input('compressed-sentences-store', 'data')]
 )
 def show_hide_graph(compressed_data):
     if not compressed_data:
-        return {'display': 'none'}
-    return {'display': 'block'} # Show the graph once there's data
+        return {'display': 'none'}, {'display': 'none'}
+    return {'display': 'block'}, {'display': 'block'} # Show the graph once there's data
+
+def insert_line_breaks(sentences, words_per_line=10):
+    formatted_sentences = []
+    for sentence in sentences:
+        words = sentence.split()
+        lines = [' '.join(words[i:i + words_per_line]) for i in range(0, len(words), words_per_line)]
+        formatted_sentence = '<br>'.join(lines)
+        formatted_sentences.append(formatted_sentence)
+    return formatted_sentences
+
 
 @app.callback(
     Output('main-graph', 'figure'),
-    [Input('compressed-sentences-store', 'data')],
+    [Input('compressed-sentences-store', 'data'),
+    Input('query-checklist', 'value'),
+    Input('graph-width-store', 'children')],
     [State('top-sentences-store', 'data'),
-     State('previous-compressed-sentences-store', 'data')]
+     State('previous-compressed-sentences-store', 'data'),
+     State('previous-selected-queries-store', 'data')]
 )
-def update_plot(compressed_data, sentences, previous_compressed_data):
-    if not compressed_data or not sentences:
-        return dash.no_update
+def update_plot(compressed_data, selected_queries, graph_width, sentences, previous_compressed_data, previous_selected_queries):
+    if not compressed_data or not sentences or not selected_queries:
+        return no_update
 
-    # Check if compressed data is same as previous
-    if compressed_data == previous_compressed_data:
-        return dash.no_update
+    # Check if update is warranted
+    if (compressed_data == previous_compressed_data) and (selected_queries == previous_selected_queries):
+        return no_update
 
-    x_vals, y_vals, z_vals = zip(*compressed_data)  # Unzipping the 3D coordinates
+    # Convert the graph_width from string to integer
+    graph_width = int(graph_width) if graph_width else None
+
+    # Use graph_width to determine the number of words or characters per line
+    # This part is a bit tricky and will likely require some experimentation
+    # For now, I'm just assuming 10 characters per 100 pixels of width as an example
+    chars_per_line = (graph_width // 100) * 10 if graph_width else 50
+
+    # Filter sentences and compressed data based on the selected queries
+    filtered_sentences = [s for i, s in enumerate(sentences) if s['search_query'] in selected_queries]
+    filtered_data = [compressed_data[i] for i, s in enumerate(sentences) if s['search_query'] in selected_queries]
+
+    # Determine the color of each sentence using the consistent color map
+    color_vals = [get_color_for_query(s['search_query']) for s in filtered_sentences]
+
+    x_vals, y_vals, z_vals = zip(*filtered_data)
 
     # Extract relevance values and scale them to be between min_size and max_size
     min_size = 5
     max_size = 20
-    relevance_vals = [s['relevance'] for s in sentences]
+    relevance_vals = [s['relevance'] for s in filtered_sentences]
     size_vals = [min_size + (max_size - min_size) * r for r in relevance_vals]
 
     trace = go.Scatter3d(
         x=x_vals,
         y=y_vals,
         z=z_vals,
-        text=[s['text'] for s in sentences],
+        text=insert_line_breaks([s['text'] for s in filtered_sentences]),
         mode='markers',
-        marker=dict(size=size_vals),
+        marker=dict(color=color_vals, size=size_vals),
         hoverinfo='text',
         hovertemplate="%{text}<extra></extra>"
 
@@ -358,20 +410,27 @@ def update_plot(compressed_data, sentences, previous_compressed_data):
 )
 def display_click_data(clickData, sentences_data):
     if not clickData:
-        return dash.no_update
+        return no_update
+
     # Get the clicked point's index
     point_index = clickData['points'][0]['pointNumber']
     clicked_sentence = sentences_data[point_index]
     content = [
+        html.H5("Sentence:"),
+        html.P(clicked_sentence['text']), 
+        html.Hr(),  # This will add a horizontal line for clearer separation
         html.H5("Context:"),
         html.P(clicked_sentence['context']),
+        html.Hr(),
         html.H5("Search Query:"),
         html.P(clicked_sentence['search_query']),
+        html.Hr(),
         html.H5("URL:"),
         html.A(clicked_sentence['url'], href=clicked_sentence['url'], target="_blank")
     ]
 
     return html.Div(content)
+
 
 
 @app.callback(
@@ -415,8 +474,5 @@ def update_task_status(n_intervals, researcher_task, query_tasks, completed_quer
     return "All tasks completed!"
 
 
-
-
 if __name__ == '__main__':
     app.run_server(debug=True)
-

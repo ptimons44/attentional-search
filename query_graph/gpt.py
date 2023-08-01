@@ -2,10 +2,10 @@ from query_graph import config
 
 import numpy as np
 
+import tiktoken
 import openai
 openai.api_key = config.OPENAI_APIKEY()
 
-import tiktoken
 
 def callGPT(prompt, max_tokens=0):
     # if chatGPT 3.5 turbo

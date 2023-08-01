@@ -1,27 +1,16 @@
-# TODO: remove when ready to deploy
-# import sys
-# sys.path.insert(0, "/Users/patricktimons/Documents/GitHub/query-graph")
+from query_graph.gpt import callGPT, embed_sentences
+from query_graph import config
+from query_graph.logger import logger
 
 from nltk import sent_tokenize
+import numpy as np
+from scipy.special import softmax
 
 import requests
 from bs4 import BeautifulSoup
 import json
-
-# google api
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-
-
-
-import numpy as np
-from scipy.special import softmax
-
-
-# using absolute imports for custom modules
-from query_graph.gpt import callGPT, embed_sentences
-from query_graph import config
-from query_graph.logger import logger
 
 from redis import Redis
 redis_client = Redis()
