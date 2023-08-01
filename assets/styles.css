@@ -36,7 +36,7 @@ body {
 .input-field {
     text-align: center; /* Center the children: input box and button */
     margin-top: 40px; /* Add some margin at the top to give it some space from elements above */
-    margin-bottom: 40px; /* Margin below the input field for spacing */
+    margin-bottom: 10px; /* Margin below the input field for spacing */
 }
 
 .input {
@@ -77,14 +77,16 @@ body {
 
 
 .gpt-response {
-    padding: 20px; /* Padding on all sides */
-    margin-top: 20px;
+    padding: 0px; /* Padding on all sides */
+    margin-top: 0px;
     margin-bottom: 20px;
     background-color: #F6F0ED; /* Light background color from your palette */
     border-radius: 10px; /* Slightly rounded corners */
     max-width: 95%; /* Set a maximum width, optionally */
     margin-left: auto;
     margin-right: auto;
+    max-width: 90%; /* or whatever width you prefer */
+    word-wrap: break-word;
 }
 
 .graph-detail-wrapper {

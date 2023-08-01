@@ -19,7 +19,7 @@ import dash
 from query_graph.tasks import init_researcher, query_to_sentences, compress_sentences
 
 #TODO: deugging cache
-use_cahce = False
+use_cache = False
 
 app = Dash(__name__)
 
@@ -34,30 +34,41 @@ header_components = [
 
 # Input Components
 input_components = [
-    dcc.Input(id='input-query', value='Enter your query here', type='text', className='input'),
-    html.Button(id='submit-query', type='submit', children='Submit', className='submit-button'),
-    # number of search queries slider
+    # Wrap search bar, submit button in a flex container
     html.Div([
-        html.Label('Number of queries to search:'),
-        dcc.Slider(
-            id='n-search-queries-slider',
-            min=1,
-            max=50,  # You can set this to a "reasonable" maximum
-            value=10,  # Initial value
-            marks={i: str(i) for i in range(0,101,10)},  # Display marks for every 10 steps
-            step=1
-        ),
-        html.Div('Or input custom value of k:'),
-        dcc.Input(
-            id='n-search-queries-input',
-            type='number',
-            value=10,  # Initial value
-        )
-    ], className='n-search-queries-control'),  # We added a new className for potential styling
+        dcc.Input(id='input-query', value='Enter your query here', type='text', className='input', style={'flex': '1'}),
+        html.Button(id='submit-query', type='submit', children='Submit', className='submit-button', style={'marginLeft': '10px'}),
+    ], style={'display': 'flex', 'alignItems': 'center', 'justifyContent': 'center', 'width': '80%', 'margin': '0 auto'}),  # Centering the elements
 
-    html.Div(id='task-status', children='')
+    # Task status right below the search bar for a compact look
+    html.Div(id='task-status', children='', className='task-status-text', style={'textAlign': 'center', 'marginTop': '5px'}),
 
+    # Slider and custom value input for k in another flex container
+    html.Div([
+        html.Div([
+            html.Label('Number of queries to search:'),
+            dcc.Slider(
+                id='n-search-queries-slider',
+                min=1,
+                max=50,
+                value=10,
+                marks={i: str(i) for i in range(0,50,10)},
+                step=1
+            ),
+        ], style={'flex': '1'}),  # Giving it a flex of 1 to take up available space
+        html.Div([
+            html.Label('Or input custom value:'),
+            dcc.Input(
+                id='n-search-queries-input',
+                type='number',
+                value=10,
+                style={'display': 'block', 'marginTop': '5px'}  # This positions the input below the label
+            )
+        ], style={'marginLeft': '20px'})
+    ], className='n-search-queries-control', style={'display': 'flex', 'justifyContent': 'space-between', 'marginTop': '10px', 'marginBottom': '0px'})
 ]
+
+
 
 
 
@@ -130,9 +141,17 @@ def sync_slider_input(slider_val, input_val):
 
 
 
+import re
+def clean_word(word):
+    # Remove punctuation from the word
+    cleaned_word = re.sub(r'[^\w\s]', '', word)
+    return cleaned_word.lower().strip()
+
 import joblib
 @app.callback(
-    [Output('gpt-response-section', 'children'), Output('researcher-store', 'data'), Output('researcher-task-store', 'data')],
+    [Output('gpt-response-section', 'children'),
+     Output('researcher-store', 'data'),
+     Output('researcher-task-store', 'data')],
     [Input('submit-query', 'n_clicks')],
     [State('input-query', 'value'), State('n-search-queries-input', 'value')]
 )
@@ -140,18 +159,44 @@ def get_llm_response(n_clicks, input_value, n_search_queries):
     if not n_clicks or not input_value:
         return "", None, None
 
-    if use_cahce:
+    if use_cache:
         researcher_result = joblib.load("cache/researcher.joblib")
         researcher_task_id = None
     else:
         # Pass the num_search_queries parameter to the init_researcher function
-        task = init_researcher.apply_async(args=[input_value, n_search_queries])  # modify to use apply_async
+        task = init_researcher.apply_async(args=[input_value, n_search_queries])
         researcher_task_id = task.id
-        researcher_result = task.get()  # this will block until the task is complete
+        researcher_result = task.get()
 
     gpt_response_text = researcher_result["gpt_response"]
+    attentions = researcher_result["attention_to_word"]
+    words = researcher_result["words"] # non stop words
+    all_words = re.findall(r'(\W+|\w+)', researcher_result["gpt_response"])
 
-    return gpt_response_text, researcher_result, researcher_task_id
+    # Process and highlight gpt_response_text
+    highlighted_words = []
+    ptr_tracked_words = 0
+    ptr_all_words = 0
+    while ptr_all_words < len(all_words):
+        if ptr_tracked_words < len(words):
+            tok_word, word = words[ptr_tracked_words], all_words[ptr_all_words].lower()
+            if tok_word == word:
+                attention = attentions[ptr_tracked_words]
+                ptr_tracked_words += 1
+            else:
+                attention = 0
+    
+        rgba_color = f"rgba(0, 128, 128, {attention})"
+        # Check if the current component is a word or not.
+        if all_words[ptr_all_words].isalnum():  # This will be True for words
+            word_span = html.Span(all_words[ptr_all_words], style={'backgroundColor': rgba_color, 'marginRight': '5px'})
+        else:
+            word_span = html.Span(all_words[ptr_all_words])  # Just create the span without extra styles for spaces/punctuation
+        highlighted_words.append(word_span)
+        ptr_all_words += 1
+
+    return highlighted_words, researcher_result, researcher_task_id
+
 
 
 @app.callback(

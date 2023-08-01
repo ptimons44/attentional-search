@@ -8,8 +8,8 @@ from sentence_transformers import util
 use_cache = False
 
 @celery_app.task
-def init_researcher(query, num_search_queries=10, n_sents=100):
-    researcher = Researcher(query, num_search_queries=num_search_queries, n_sents=n_sents)
+def init_researcher(query, n_search_queries, n_sents=100):
+    researcher = Researcher(query, n_search_queries=n_search_queries, n_sents=n_sents)
     return researcher.to_dict()
 
 import joblib
